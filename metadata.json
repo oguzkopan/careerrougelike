@@ -1,0 +1,5 @@
+{
+  "name": "CareerRoguelike – Multi-Agent Profession Simulator",
+  "description": "A web game that simulates careers using multiple AI agents to generate interviews, tasks, events, and career progression. Players choose a profession and level up by completing challenges.",
+  "requestFramePermissions": []
+}
