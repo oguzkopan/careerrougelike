@@ -17,12 +17,12 @@ the multi-agent workflow based on frontend requests.
 
 import logging
 from google.adk.agents import SequentialAgent
-from backend.agents.workflows import (
+from agents.workflows import (
     interview_workflow,
     task_workflow,
     parallel_task_workflow
 )
-from backend.agents.event_generator_agent import event_generator_agent
+from agents.event_generator_agent import event_generator_agent
 
 # Configure logging to show agent transitions
 logging.basicConfig(

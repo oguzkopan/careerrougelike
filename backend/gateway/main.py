@@ -18,10 +18,13 @@ from pydantic import BaseModel, Field
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
-from backend.agents.root_agent import root_agent
-from backend.shared.firestore_manager import FirestoreManager
-from backend.shared.config import PROJECT_ID
-from backend.gateway.auth import get_current_user, optional_auth
+# Initialize model configuration before importing agents
+from shared import model_config  # This configures Vertex AI/API key
+
+from agents.root_agent import root_agent
+from shared.firestore_manager import FirestoreManager
+from shared.config import PROJECT_ID, USE_VERTEX_AI
+from gateway.auth import get_current_user, optional_auth
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +47,9 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize Firestore and ADK Runner
     global firestore_manager, adk_runner
     
+    auth_method = "Vertex AI" if USE_VERTEX_AI else "Google AI API"
+    logger.info(f"Starting backend with {auth_method} authentication")
+    
     logger.info("Initializing Firestore client...")
     firestore_manager = FirestoreManager()
     
@@ -55,7 +61,7 @@ async def lifespan(app: FastAPI):
         session_service=session_service
     )
     
-    logger.info("Backend startup complete")
+    logger.info(f"Backend startup complete (Project: {PROJECT_ID}, Auth: {auth_method})")
     
     yield
     

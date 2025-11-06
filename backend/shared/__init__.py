@@ -1,6 +1,6 @@
 """Shared utilities and services"""
 
-from backend.shared.config import (
+from shared.config import (
     Config,
     ConfigurationError,
     config,
@@ -12,8 +12,8 @@ from backend.shared.config import (
     API_PORT,
     CORS_ORIGINS,
 )
-from backend.shared.firestore_manager import FirestoreManager
-from backend.shared.session_service import FirestoreSessionService
+from shared.firestore_manager import FirestoreManager
+from shared.session_service import FirestoreSessionService
 
 __all__ = [
     "Config",

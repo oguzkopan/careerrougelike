@@ -13,7 +13,7 @@ from firebase_admin import credentials, auth
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from backend.shared.config import PROJECT_ID
+from shared.config import PROJECT_ID
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ except Exception as e:
 
 # HTTP Bearer security scheme
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> dict:
@@ -99,7 +100,7 @@ async def get_current_user(token_data: dict = Security(verify_token)) -> str:
     return token_data['user_id']
 
 
-async def optional_auth(credentials: Optional[HTTPAuthorizationCredentials] = Security(security)) -> Optional[str]:
+async def optional_auth(credentials: Optional[HTTPAuthorizationCredentials] = Security(optional_security)) -> Optional[str]:
     """
     Optional authentication dependency
     Returns user_id if authenticated, None otherwise
@@ -114,7 +115,11 @@ async def optional_auth(credentials: Optional[HTTPAuthorizationCredentials] = Se
         return None
     
     try:
-        token_data = await verify_token(credentials)
-        return token_data['user_id']
-    except HTTPException:
+        # Manually verify the token
+        decoded_token = auth.verify_id_token(credentials.credentials)
+        user_id = decoded_token.get('uid')
+        logger.info(f"Optional auth: Token verified for user {user_id}")
+        return user_id
+    except Exception as e:
+        logger.warning(f"Optional auth: Token verification failed: {str(e)}")
         return None

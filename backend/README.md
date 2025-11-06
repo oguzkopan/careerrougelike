@@ -142,62 +142,77 @@ docker run -p 8080:8080 --env-file .env career-rl-backend
 
 ## Cloud Run Deployment
 
+### Quick Start (Automated)
+
+We provide scripts to automate the deployment process:
+
+1. **Set up GCP project** (one-time setup):
+   ```bash
+   cd backend
+   ./gcp-setup.sh
+   ```
+   This will enable required APIs, create Artifact Registry, and set up Firestore.
+
+2. **Deploy to Cloud Run**:
+   ```bash
+   ./deploy.sh
+   ```
+   This will build, push, and deploy your backend to Cloud Run.
+
+3. **Test deployment**:
+   ```bash
+   ./test-deployment.sh
+   ```
+   This will run automated tests against your deployed service.
+
+### Manual Deployment
+
+For step-by-step manual deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md).
+
 ### Prerequisites
 
-1. Enable required APIs:
+1. **gcloud CLI**: Install from https://cloud.google.com/sdk/docs/install
+2. **Docker**: Install from https://docs.docker.com/get-docker/
+3. **GCP Project**: Active Google Cloud project
+4. **Environment Variables**: Configure `.env` file:
    ```bash
-   gcloud services enable run.googleapis.com
-   gcloud services enable firestore.googleapis.com
-   gcloud services enable artifactregistry.googleapis.com
+   cp .env.example .env
+   # Edit .env and set PROJECT_ID and GOOGLE_API_KEY
    ```
 
-2. Create Artifact Registry repository:
+### Quick Manual Steps
+
+1. **Set up GCP services**:
    ```bash
-   gcloud artifacts repositories create career-rl \
-     --repository-format=docker \
-     --location=europe-west1
+   gcloud services enable run.googleapis.com firestore.googleapis.com artifactregistry.googleapis.com
+   gcloud artifacts repositories create career-rl --repository-format=docker --location=europe-west1
    ```
 
-3. Create Firestore database (Native mode) in GCP Console
-
-### Deploy to Cloud Run
-
-1. **Authenticate with Artifact Registry**:
-   ```bash
-   gcloud auth configure-docker europe-west1-docker.pkg.dev
-   ```
-
-2. **Build and tag image**:
+2. **Build and push**:
    ```bash
    docker build -t career-rl-backend .
    docker tag career-rl-backend europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest
-   ```
-
-3. **Push to Artifact Registry**:
-   ```bash
+   gcloud auth configure-docker europe-west1-docker.pkg.dev
    docker push europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest
    ```
 
-4. **Deploy to Cloud Run**:
+3. **Deploy**:
    ```bash
    gcloud run deploy career-rl-backend \
      --image europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest \
      --region europe-west1 \
-     --platform managed \
      --allow-unauthenticated \
      --set-env-vars GOOGLE_API_KEY=xxx,PROJECT_ID=xxx \
-     --min-instances 0 \
-     --max-instances 10 \
-     --memory 1Gi \
-     --cpu 2
+     --min-instances 0 --max-instances 10 \
+     --memory 1Gi --cpu 2
    ```
 
-5. **Get deployed URL**:
-   ```bash
-   gcloud run services describe career-rl-backend \
-     --region europe-west1 \
-     --format 'value(status.url)'
-   ```
+### Deployment Files
+
+- `gcp-setup.sh` - One-time GCP project setup
+- `deploy.sh` - Automated build and deployment
+- `test-deployment.sh` - Test deployed service
+- `DEPLOYMENT.md` - Detailed deployment guide
 
 ## Technologies Used
 

@@ -9,7 +9,7 @@ from google.adk.sessions import InMemorySessionService, Session
 from typing import Optional, Dict, Any
 import logging
 
-from backend.shared.firestore_manager import FirestoreManager
+from shared.firestore_manager import FirestoreManager
 
 logger = logging.getLogger(__name__)
 

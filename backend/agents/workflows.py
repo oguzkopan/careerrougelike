@@ -12,10 +12,10 @@ Workflows:
 """
 
 from google.adk.agents import SequentialAgent, ParallelAgent, LoopAgent, LlmAgent
-from backend.agents.interviewer_agent import interviewer_agent
-from backend.agents.grader_agent import grader_agent
-from backend.agents.task_generator_agent import task_generator_agent
-from backend.agents.cv_writer_agent import cv_writer_agent
+from agents.interviewer_agent import interviewer_agent
+from agents.grader_agent import grader_agent
+from agents.task_generator_agent import task_generator_agent
+from agents.cv_writer_agent import cv_writer_agent
 
 
 # Interview Workflow
@@ -37,10 +37,18 @@ interview_workflow = SequentialAgent(
 # If the player fails on the first attempt, they get one retry with feedback.
 # The workflow then updates the CV based on completed tasks.
 
-# Wrap grader_agent in LoopAgent for retry mechanism
+# Create a separate grader instance for task workflow
+task_grader = LlmAgent(
+    name="TaskGraderAgent",
+    model="gemini-2.0-flash-exp",
+    instruction=grader_agent.instruction,
+    description="Grader for task submissions"
+)
+
+# Wrap task_grader in LoopAgent for retry mechanism
 loop_grader = LoopAgent(
     name="LoopGraderAgent",
-    sub_agent=grader_agent,
+    sub_agents=[task_grader],
     max_iterations=2,
     description="Grader with retry logic - allows up to 2 attempts at task completion"
 )
