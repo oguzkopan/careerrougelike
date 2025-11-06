@@ -768,3 +768,62 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 ## License
 
 MIT
+
+## Frontend Deployment
+
+The frontend is also deployed to Cloud Run and can be accessed at:
+**https://career-rl-frontend-1086514937351.europe-west1.run.app**
+
+### Frontend Architecture
+
+- **Framework**: React + Vite
+- **Server**: Nginx (Alpine)
+- **Container**: Multi-stage Docker build
+- **Configuration**: 
+  - Min Instances: 0 (scale to zero)
+  - Max Instances: 10
+  - Memory: 512Mi
+  - CPU: 1
+  - Port: 8080
+
+### Frontend Deployment Steps
+
+1. Build the frontend Docker image:
+   ```bash
+   gcloud builds submit --tag europe-west1-docker.pkg.dev/careerrogue-4df28/career-rl/frontend:latest
+   ```
+
+2. Deploy to Cloud Run:
+   ```bash
+   gcloud run deploy career-rl-frontend \
+     --image europe-west1-docker.pkg.dev/careerrogue-4df28/career-rl/frontend:latest \
+     --region europe-west1 \
+     --platform managed \
+     --allow-unauthenticated \
+     --min-instances 0 \
+     --max-instances 10 \
+     --memory 512Mi \
+     --cpu 1 \
+     --port 8080
+   ```
+
+3. The frontend will be available at the provided Cloud Run URL
+
+### CORS Configuration
+
+The backend is configured to allow requests from the frontend Cloud Run URL:
+- https://career-rl-frontend-1086514937351.europe-west1.run.app
+- https://career-rl-frontend-qy7qschhma-ew.a.run.app
+- http://localhost:3000 (development)
+- http://localhost:4173 (preview)
+
+See `backend/gateway/main.py` for CORS configuration.
+
+## Complete Deployment URLs
+
+- **Frontend**: https://career-rl-frontend-1086514937351.europe-west1.run.app
+- **Backend**: https://career-rl-backend-1086514937351.europe-west1.run.app
+- **Project**: careerrogue-4df28
+- **Region**: europe-west1
+
+Both services are deployed in the same GCP project and region for optimal performance.

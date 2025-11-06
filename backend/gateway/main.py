@@ -79,9 +79,17 @@ app = FastAPI(
 
 
 # Add CORS middleware for frontend
+# Allow both the custom domain and the Cloud Run URL
+allowed_origins = [
+    "https://career-rl-frontend-1086514937351.europe-west1.run.app",
+    "https://career-rl-frontend-qy7qschhma-ew.a.run.app",
+    "http://localhost:3000",  # For local development
+    "http://localhost:4173",  # For local preview
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -4,7 +4,7 @@ import GameScreen from './components/GameScreen';
 import AgentDashboard from './components/AgentDashboard';
 import { GameState, Profession } from './types';
 import { PROFESSIONS } from './constants';
-import * as apiService from './services/apiService';
+import * as apiService from './services/backendApiService';
 
 const App: React.FC = () => {
   const [view, setView] = useState<'game' | 'agents'>('game');

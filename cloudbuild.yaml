@@ -1,0 +1,29 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:latest'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:$BUILD_ID'
+      - '.'
+
+  # Push the Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:latest'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:$BUILD_ID'
+
+images:
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:latest'
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/frontend:$BUILD_ID'
+
+options:
+  machineType: 'N1_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
