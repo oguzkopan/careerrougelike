@@ -2,31 +2,79 @@
 
 A Python-based multi-agent AI system built with **Google's Agent Development Kit (ADK)** and deployed on **Google Cloud Run**. This backend demonstrates advanced multi-agent collaboration where specialized AI agents work together to create a gamified career simulation.
 
+**Built for Google Cloud Run Hackathon** - This project showcases excellent multi-agent collaboration using Google ADK, demonstrating Sequential, Parallel, and Loop agent patterns with Gemini 2.5 Flash.
+
 ## Architecture Overview
 
-The backend uses ADK's agent orchestration patterns to coordinate multiple AI agents:
+The backend uses ADK's agent orchestration patterns to coordinate multiple AI agents that communicate through ADK's event system and share state via the `session.state` dictionary.
 
-- **Interviewer Agent**: Generates profession-specific interview questions
-- **Grader Agent**: Evaluates player answers and provides feedback
-- **Task Generator Agent**: Creates profession-specific work tasks
-- **CV Writer Agent**: Updates player CV based on accomplishments
-- **Event Generator Agent**: Generates random career events with choices
-- **Root Agent**: Orchestrates all agents using SequentialAgent pattern
+📊 **See detailed diagrams**: [diagrams/](./diagrams/)
+- [Agent Workflow Diagram](./diagrams/agent-workflow.md) - Visual representation of agent communication
+- [State Flow Diagram](./diagrams/state-flow.md) - How session.state evolves through the game
+- [ADK Patterns](./diagrams/adk-patterns.md) - Sequential, Parallel, and Loop pattern examples
 
-All agents communicate through ADK's event system and share state via `session.state` dictionary.
+### Agent Roles and Communication
+
+Each agent has a specific purpose and communicates with others through the shared session state:
+
+- **Interviewer Agent** (`LlmAgent`): Generates profession-specific interview questions based on `{profession}` and `{level}` from state. Outputs to `interview_questions` key.
+  
+- **Grader Agent** (`LlmAgent`): Evaluates player answers by reading `{question}`, `{expected_answer}`, and `{player_answer}` from state. Returns score (0-100), pass/fail status, and feedback to `grading_result` key. Used for both interview and task grading.
+  
+- **Task Generator Agent** (`LlmAgent`): Creates profession-specific work tasks (code for iOS, SQL for Data Analyst, design for Designer, sales scenarios for Sales). Reads `{profession}` and `{level}`, outputs to `current_task` key with prompt, acceptance criteria, and difficulty.
+  
+- **CV Writer Agent** (`LlmAgent`): Updates player CV based on completed tasks. Reads `{completed_tasks}` and `{scores}` from state, generates resume bullets with measurable impact and skills list. Outputs to `cv_data` key.
+  
+- **Event Generator Agent** (`LlmAgent`): Generates random career events (incidents, promotions, scope creep, budget cuts) with 2-4 choice options. Reads `{profession}`, `{level}`, and `{recent_performance}`, outputs to `current_event` key.
+  
+- **Root Agent** (`SequentialAgent`): Orchestrates all agents in sequence, managing the overall workflow and ensuring state is passed correctly between agents.
+
+### How Agents Communicate
+
+1. **Shared State Dictionary**: All agents read from and write to `session.state`, a dictionary that persists throughout the session.
+
+2. **Event System**: Agents yield events when they complete, which the ADK Runner processes and forwards to the next agent in the workflow.
+
+3. **Sequential Execution**: The Root Agent runs sub-agents in order, with each agent's output becoming available to subsequent agents.
+
+4. **State Persistence**: After each agent invocation, the Gateway API persists the updated state to Firestore, ensuring durability across requests.
 
 ## Project Structure
 
 ```
 backend/
-├── agents/              # ADK agents (LlmAgent, SequentialAgent, etc.)
-├── gateway/             # FastAPI REST API
-├── shared/              # Shared utilities (Firestore, config)
-├── tools/               # ADK tools for agents
-├── requirements.txt     # Python dependencies
-├── .env.example         # Environment variables template
-├── Dockerfile           # Docker configuration for Cloud Run
-└── README.md           # This file
+├── agents/                          # ADK agents and workflows
+│   ├── __init__.py
+│   ├── interviewer_agent.py        # LlmAgent: Generates interview questions
+│   ├── grader_agent.py             # LlmAgent: Evaluates answers and tasks
+│   ├── task_generator_agent.py     # LlmAgent: Creates work tasks
+│   ├── cv_writer_agent.py          # LlmAgent: Updates CV from accomplishments
+│   ├── event_generator_agent.py    # LlmAgent: Generates career events
+│   ├── workflows.py                # SequentialAgent, ParallelAgent, LoopAgent workflows
+│   └── root_agent.py               # Root SequentialAgent orchestrator
+├── gateway/                         # FastAPI REST API
+│   ├── __init__.py
+│   ├── main.py                     # FastAPI app and endpoints
+│   └── auth.py                     # Firebase authentication
+├── shared/                          # Shared utilities
+│   ├── __init__.py
+│   ├── firestore_manager.py        # Firestore CRUD operations
+│   ├── session_service.py          # Custom ADK SessionService
+│   ├── config.py                   # Environment configuration
+│   └── model_config.py             # Model configuration
+├── tools/                           # ADK tools for agents (optional)
+│   └── __init__.py
+├── requirements.txt                 # Python dependencies
+├── .env.example                     # Environment variables template
+├── .dockerignore                    # Docker ignore patterns
+├── Dockerfile                       # Docker configuration for Cloud Run
+├── gcp-setup.sh                     # GCP project setup script
+├── deploy-cloud-build.sh            # Cloud Build deployment script
+├── quick-deploy.sh                  # Quick deployment script
+├── test-deployment.sh               # Deployment testing script
+├── deployment-checklist.md          # Deployment checklist
+├── DEPLOY-QUICK-REFERENCE.txt       # Quick deployment reference
+└── README.md                        # This file
 ```
 
 ## Setup Instructions
@@ -72,147 +120,467 @@ backend/
 
    The API will be available at `http://localhost:8080`
 
-### Testing with ADK CLI
+### Local Testing Instructions
 
-ADK provides CLI tools for testing agents locally:
+#### Testing with ADK CLI
+
+ADK provides CLI tools for testing agents locally without running the full API:
 
 ```bash
 # Test individual agents
 adk run agents/interviewer_agent.py
+adk run agents/grader_agent.py
+adk run agents/task_generator_agent.py
+adk run agents/cv_writer_agent.py
+adk run agents/event_generator_agent.py
 
-# Test with interactive web UI
-adk web --port 8000
+# Test workflow compositions
+adk run agents/workflows.py
 
-# Test root agent workflow
+# Test root agent orchestration
 adk run agents/root_agent.py
+
+# Launch interactive web UI for testing
+adk web --port 8000
+```
+
+The `adk web` command launches a web interface where you can:
+- Interact with agents in real-time
+- See the conversation history
+- Inspect session state changes
+- Debug agent workflows
+
+#### Testing the FastAPI Gateway
+
+```bash
+# Start the development server
+uvicorn gateway.main:app --reload --port 8080
+
+# In another terminal, test endpoints:
+
+# Health check
+curl http://localhost:8080/health
+
+# Create a session
+curl -X POST http://localhost:8080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 3}'
+
+# Invoke interview agent
+curl -X POST http://localhost:8080/sessions/{session_id}/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"action": "interview", "data": {}}'
 ```
 
 ## API Endpoints
 
 ### Create Session
-```bash
-POST /sessions
-Content-Type: application/json
 
+Creates a new game session with specified profession and level.
+
+**Endpoint**: `POST /sessions`
+
+**Request Body**:
+```json
 {
-  "profession": "ios_engineer",
-  "level": 3
+  "profession": "ios_engineer",  // Options: ios_engineer, data_analyst, product_designer, sales_associate
+  "level": 3                      // Range: 1-10
 }
 ```
+
+**Response**:
+```json
+{
+  "session_id": "sess-abc123-def456"
+}
+```
+
+**Example**:
+```bash
+curl -X POST http://localhost:8080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 3}'
+```
+
+---
 
 ### Invoke Agent Workflow
-```bash
-POST /sessions/{session_id}/invoke
-Content-Type: application/json
 
+Triggers specific agent workflows based on the action type.
+
+**Endpoint**: `POST /sessions/{session_id}/invoke`
+
+**Request Body**:
+```json
 {
-  "action": "interview",
-  "data": {}
+  "action": "interview" | "submit_answer" | "generate_task" | "submit_task" | "generate_event",
+  "data": {
+    "answer": "player answer text",  // For submit_answer and submit_task
+    "choice": "A"                     // For event choices
+  }
 }
 ```
 
-### Get Session State
-```bash
-GET /sessions/{session_id}
+**Actions**:
+- `interview`: Generates interview questions using Interviewer Agent
+- `submit_answer`: Grades interview answer using Grader Agent
+- `generate_task`: Creates work task using Task Generator Agent
+- `submit_task`: Grades task submission using Grader Agent (with retry loop)
+- `generate_event`: Creates career event using Event Generator Agent
+
+**Response**:
+```json
+{
+  "result": {
+    "interview_questions": [...],  // For interview action
+    "grading_result": {...},       // For submit_answer/submit_task
+    "current_task": {...},         // For generate_task
+    "current_event": {...}         // For generate_event
+  },
+  "state": {
+    // Full session state
+  }
+}
 ```
+
+**Examples**:
+```bash
+# Start interview
+curl -X POST http://localhost:8080/sessions/sess-123/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"action": "interview", "data": {}}'
+
+# Submit interview answer
+curl -X POST http://localhost:8080/sessions/sess-123/invoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "submit_answer",
+    "data": {
+      "answer": "Swift is a type-safe language..."
+    }
+  }'
+
+# Generate task
+curl -X POST http://localhost:8080/sessions/sess-123/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"action": "generate_task", "data": {}}'
+```
+
+---
+
+### Get Session State
+
+Retrieves the complete session state including all agent outputs.
+
+**Endpoint**: `GET /sessions/{session_id}`
+
+**Response**:
+```json
+{
+  "session_id": "sess-123",
+  "profession": "ios_engineer",
+  "level": 3,
+  "status": "active",
+  "state": {
+    "interview_questions": [...],
+    "grading_result": {...},
+    "current_task": {...},
+    "completed_tasks": [...],
+    "cv_data": {...}
+  }
+}
+```
+
+**Example**:
+```bash
+curl http://localhost:8080/sessions/sess-123
+```
+
+---
 
 ### Get CV Data
-```bash
-GET /sessions/{session_id}/cv
+
+Retrieves only the CV data for a session.
+
+**Endpoint**: `GET /sessions/{session_id}/cv`
+
+**Response**:
+```json
+{
+  "bullets": [
+    "• Reduced app crash rate by 23% through systematic debugging",
+    "• Implemented 5 new features using SwiftUI and Combine framework"
+  ],
+  "skills": ["Swift", "SwiftUI", "Debugging", "Performance Optimization"]
+}
 ```
 
-### Health Check
+**Example**:
 ```bash
-GET /health
+curl http://localhost:8080/sessions/sess-123/cv
+```
+
+---
+
+### Health Check
+
+Simple health check endpoint for monitoring.
+
+**Endpoint**: `GET /health`
+
+**Response**:
+```json
+{
+  "status": "healthy"
+}
+```
+
+**Example**:
+```bash
+curl http://localhost:8080/health
 ```
 
 ## Docker Deployment
 
 ### Build Docker Image
 
+Build the Docker image for the backend:
+
 ```bash
+cd backend
 docker build -t career-rl-backend .
 ```
 
+The Dockerfile:
+- Uses `python:3.9-slim` as base image
+- Installs all dependencies from `requirements.txt`
+- Copies agent, gateway, shared, and tools directories
+- Exposes port 8080
+- Runs uvicorn server on startup
+
 ### Run Locally with Docker
+
+Run the containerized backend locally:
 
 ```bash
 docker run -p 8080:8080 --env-file .env career-rl-backend
 ```
 
+Or with explicit environment variables:
+
+```bash
+docker run -p 8080:8080 \
+  -e GOOGLE_API_KEY=your_api_key \
+  -e PROJECT_ID=your_project_id \
+  career-rl-backend
+```
+
+Test the containerized service:
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Create session
+curl -X POST http://localhost:8080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 3}'
+```
+
 ## Cloud Run Deployment
-
-### Quick Start (Automated)
-
-We provide scripts to automate the deployment process:
-
-1. **Set up GCP project** (one-time setup):
-   ```bash
-   cd backend
-   ./gcp-setup.sh
-   ```
-   This will enable required APIs, create Artifact Registry, and set up Firestore.
-
-2. **Deploy to Cloud Run**:
-   ```bash
-   ./deploy.sh
-   ```
-   This will build, push, and deploy your backend to Cloud Run.
-
-3. **Test deployment**:
-   ```bash
-   ./test-deployment.sh
-   ```
-   This will run automated tests against your deployed service.
-
-### Manual Deployment
-
-For step-by-step manual deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md).
 
 ### Prerequisites
 
+Before deploying to Cloud Run, ensure you have:
+
 1. **gcloud CLI**: Install from https://cloud.google.com/sdk/docs/install
 2. **Docker**: Install from https://docs.docker.com/get-docker/
-3. **GCP Project**: Active Google Cloud project
-4. **Environment Variables**: Configure `.env` file:
+3. **GCP Project**: Active Google Cloud project with billing enabled
+4. **API Key**: Google API key for Gemini 2.5 Flash
+5. **Environment Variables**: Configure `.env` file:
    ```bash
    cp .env.example .env
    # Edit .env and set PROJECT_ID and GOOGLE_API_KEY
    ```
 
-### Quick Manual Steps
+### Quick Start (Automated)
 
-1. **Set up GCP services**:
-   ```bash
-   gcloud services enable run.googleapis.com firestore.googleapis.com artifactregistry.googleapis.com
-   gcloud artifacts repositories create career-rl --repository-format=docker --location=europe-west1
-   ```
+We provide scripts to automate the deployment process:
 
-2. **Build and push**:
-   ```bash
-   docker build -t career-rl-backend .
-   docker tag career-rl-backend europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest
-   gcloud auth configure-docker europe-west1-docker.pkg.dev
-   docker push europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest
-   ```
+#### 1. Set up GCP project (one-time setup)
 
-3. **Deploy**:
-   ```bash
-   gcloud run deploy career-rl-backend \
-     --image europe-west1-docker.pkg.dev/PROJECT_ID/career-rl/backend:latest \
-     --region europe-west1 \
-     --allow-unauthenticated \
-     --set-env-vars GOOGLE_API_KEY=xxx,PROJECT_ID=xxx \
-     --min-instances 0 --max-instances 10 \
-     --memory 1Gi --cpu 2
-   ```
+```bash
+cd backend
+./gcp-setup.sh
+```
 
-### Deployment Files
+This script will:
+- Enable required APIs (Cloud Run, Firestore, Artifact Registry)
+- Create Artifact Registry repository in europe-west1
+- Set up Firestore database in Native mode
+- Configure IAM permissions
+
+#### 2. Deploy to Cloud Run
+
+```bash
+./quick-deploy.sh
+```
+
+This script will:
+- Build the Docker image
+- Tag and push to Artifact Registry
+- Deploy to Cloud Run with optimal settings
+- Output the deployed service URL
+
+#### 3. Test deployment
+
+```bash
+./test-deployment.sh
+```
+
+This script will:
+- Run health check
+- Test session creation
+- Test agent invocation
+- Verify Firestore integration
+
+### Manual Deployment Steps
+
+If you prefer manual control, follow these steps:
+
+#### Step 1: Enable GCP Services
+
+```bash
+# Set your project ID
+export PROJECT_ID=your-project-id
+gcloud config set project $PROJECT_ID
+
+# Enable required APIs
+gcloud services enable run.googleapis.com
+gcloud services enable firestore.googleapis.com
+gcloud services enable artifactregistry.googleapis.com
+```
+
+#### Step 2: Create Artifact Registry Repository
+
+```bash
+gcloud artifacts repositories create career-rl \
+  --repository-format=docker \
+  --location=europe-west1 \
+  --description="CareerRoguelike backend images"
+```
+
+#### Step 3: Build and Push Docker Image
+
+```bash
+# Build the image
+docker build -t career-rl-backend .
+
+# Tag for Artifact Registry
+docker tag career-rl-backend \
+  europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest
+
+# Configure Docker authentication
+gcloud auth configure-docker europe-west1-docker.pkg.dev
+
+# Push to registry
+docker push europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest
+```
+
+#### Step 4: Deploy to Cloud Run
+
+```bash
+gcloud run deploy career-rl-backend \
+  --image europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest \
+  --region europe-west1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --set-env-vars GOOGLE_API_KEY=your_api_key,PROJECT_ID=$PROJECT_ID \
+  --min-instances 0 \
+  --max-instances 10 \
+  --memory 1Gi \
+  --cpu 2 \
+  --timeout 300
+```
+
+Configuration explained:
+- `--min-instances 0`: Scale to zero when idle (cost optimization)
+- `--max-instances 10`: Auto-scale up to 10 instances under load
+- `--memory 1Gi`: 1GB memory per instance (sufficient for ADK agents)
+- `--cpu 2`: 2 vCPUs for faster agent execution
+- `--timeout 300`: 5-minute timeout for long-running agent workflows
+- `--allow-unauthenticated`: Public access (add auth for production)
+
+#### Step 5: Get Service URL
+
+```bash
+gcloud run services describe career-rl-backend \
+  --region europe-west1 \
+  --format 'value(status.url)'
+```
+
+#### Step 6: Test Deployed Service
+
+```bash
+# Set the service URL
+export SERVICE_URL=$(gcloud run services describe career-rl-backend \
+  --region europe-west1 --format 'value(status.url)')
+
+# Health check
+curl $SERVICE_URL/health
+
+# Create session
+curl -X POST $SERVICE_URL/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 3}'
+
+# Test agent invocation
+curl -X POST $SERVICE_URL/sessions/{session_id}/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"action": "interview", "data": {}}'
+```
+
+### Deployment Files Reference
 
 - `gcp-setup.sh` - One-time GCP project setup
-- `deploy.sh` - Automated build and deployment
-- `test-deployment.sh` - Test deployed service
-- `DEPLOYMENT.md` - Detailed deployment guide
+- `quick-deploy.sh` - Quick deployment script
+- `deploy-cloud-build.sh` - Cloud Build deployment (CI/CD)
+- `test-deployment.sh` - Automated deployment testing
+- `deployment-checklist.md` - Pre-deployment checklist
+- `DEPLOY-QUICK-REFERENCE.txt` - Quick command reference
+
+### Monitoring and Logs
+
+View logs in Cloud Console:
+```bash
+gcloud run services logs read career-rl-backend \
+  --region europe-west1 \
+  --limit 50
+```
+
+Or stream logs in real-time:
+```bash
+gcloud run services logs tail career-rl-backend \
+  --region europe-west1
+```
+
+### Updating the Deployment
+
+To deploy updates:
+
+```bash
+# Rebuild and push
+docker build -t career-rl-backend .
+docker tag career-rl-backend \
+  europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest
+docker push europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest
+
+# Cloud Run will automatically deploy the new image
+# Or force a new revision:
+gcloud run services update career-rl-backend \
+  --region europe-west1 \
+  --image europe-west1-docker.pkg.dev/$PROJECT_ID/career-rl/backend:latest
+```
 
 ## Technologies Used
 
@@ -226,12 +594,68 @@ For step-by-step manual deployment instructions, see [DEPLOYMENT.md](./DEPLOYMEN
 
 ## Multi-Agent Patterns Demonstrated
 
-This project showcases several ADK agent patterns:
+This project showcases several ADK agent patterns to demonstrate excellent multi-agent collaboration:
 
-1. **LlmAgent**: Individual agents that use Gemini for reasoning
-2. **SequentialAgent**: Runs agents in sequence, passing state between them
-3. **ParallelAgent**: Runs multiple agents concurrently
-4. **LoopAgent**: Runs agents in a loop with retry logic
+### 1. LlmAgent Pattern
+
+Individual agents that use Gemini 2.5 Flash for reasoning. Each agent has:
+- A specific `instruction` prompt with placeholders for state variables
+- An `output_key` that determines where results are stored in session.state
+- Access to the full conversation history and session context
+
+**Examples**: All five core agents (Interviewer, Grader, Task Generator, CV Writer, Event Generator)
+
+### 2. SequentialAgent Pattern
+
+Runs sub-agents in sequence, with each agent's output becoming available to the next agent. The Root Agent uses this pattern to orchestrate the entire workflow.
+
+**Example**: `root_agent` in `agents/root_agent.py`
+```python
+root_agent = SequentialAgent(
+    name="CareerRoguelikeRootAgent",
+    sub_agents=[
+        interviewer_agent,
+        grader_agent,
+        task_generator_agent,
+        cv_writer_agent,
+        event_generator_agent
+    ]
+)
+```
+
+### 3. ParallelAgent Pattern
+
+Runs multiple agents concurrently for faster execution. Useful when agents don't depend on each other's outputs.
+
+**Example**: Parallel task generation in `agents/workflows.py`
+```python
+parallel_task_workflow = ParallelAgent(
+    name="ParallelTaskGenerator",
+    sub_agents=[
+        task_generator_ios,
+        task_generator_data,
+        task_generator_design,
+        task_generator_sales
+    ]
+)
+```
+
+This demonstrates generating tasks for all four professions simultaneously, showcasing ADK's ability to parallelize independent operations.
+
+### 4. LoopAgent Pattern
+
+Runs agents in a loop until a condition is met or max iterations reached. Perfect for retry logic.
+
+**Example**: Task grading with retry in `agents/workflows.py`
+```python
+loop_grader = LoopAgent(
+    agent=grader_agent,
+    max_iterations=2,
+    description="Grades task with one retry opportunity"
+)
+```
+
+This allows players to retry failed tasks once, with the grader providing feedback for improvement.
 
 ## Development Notes
 
@@ -240,9 +664,106 @@ This project showcases several ADK agent patterns:
 - The Gateway API controls which agents run based on frontend actions
 - Agents communicate through ADK's yield/event system
 
+## Agent Communication Flow
+
+Here's how agents communicate through the shared state:
+
+```
+1. Frontend → Gateway API: POST /sessions/{sid}/invoke {"action": "interview"}
+2. Gateway → ADK Runner: Execute root_agent with session context
+3. Root Agent → Interviewer Agent: Reads {profession}, {level} from state
+4. Interviewer Agent → Gemini: Generates questions
+5. Interviewer Agent → State: Writes to interview_questions key
+6. Root Agent → Firestore: Persists updated state
+7. Gateway → Frontend: Returns interview_questions
+
+Player submits answer...
+
+8. Frontend → Gateway: POST /sessions/{sid}/invoke {"action": "submit_answer", "data": {"answer": "..."}}
+9. Gateway → ADK Runner: Execute root_agent
+10. Root Agent → Grader Agent: Reads {interview_questions}, {player_answer} from state
+11. Grader Agent → Gemini: Evaluates answer
+12. Grader Agent → State: Writes to grading_result key
+13. Root Agent → Firestore: Persists updated state
+14. Gateway → Frontend: Returns grading_result
+```
+
+This event-driven architecture ensures:
+- **Loose coupling**: Agents don't directly call each other
+- **State transparency**: All data flow is visible in session.state
+- **Persistence**: State survives across requests via Firestore
+- **Debuggability**: Easy to inspect state at any point in the workflow
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue**: `ModuleNotFoundError: No module named 'google.adk'`
+- **Solution**: Ensure you've activated the virtual environment and installed dependencies:
+  ```bash
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  ```
+
+**Issue**: `GOOGLE_API_KEY not found`
+- **Solution**: Copy `.env.example` to `.env` and add your API key:
+  ```bash
+  cp .env.example .env
+  # Edit .env and add GOOGLE_API_KEY=your_key_here
+  ```
+
+**Issue**: Firestore permission denied
+- **Solution**: Ensure Firestore is enabled and you have proper credentials:
+  ```bash
+  gcloud services enable firestore.googleapis.com
+  gcloud auth application-default login
+  ```
+
+**Issue**: Docker build fails
+- **Solution**: Ensure you're in the backend/ directory and have a stable internet connection:
+  ```bash
+  cd backend
+  docker build -t career-rl-backend .
+  ```
+
+**Issue**: Cloud Run deployment fails
+- **Solution**: Check that all required APIs are enabled:
+  ```bash
+  gcloud services enable run.googleapis.com artifactregistry.googleapis.com
+  ```
+
+## Performance Considerations
+
+- **Cold Start**: First request after idle period may take 3-5 seconds as Cloud Run spins up a container
+- **Warm Instances**: Subsequent requests complete in <1 second
+- **Agent Execution**: Each agent call to Gemini takes 1-2 seconds
+- **Parallel Execution**: ParallelAgent can reduce total time by running agents concurrently
+- **Scale to Zero**: With `min-instances=0`, no cost when idle
+- **Auto-scaling**: Cloud Run automatically scales up to handle traffic spikes
+
+## Security Notes
+
+- **API Keys**: Never commit `.env` file to version control
+- **Authentication**: Current setup allows unauthenticated access for demo purposes
+- **Production**: Add Firebase Auth or Cloud IAM for production deployments
+- **Firestore Rules**: Configure security rules to restrict access by user ID
+- **Environment Variables**: Use Secret Manager for sensitive values in production
+
 ## Built for Google Cloud Run Hackathon
 
-This project was created to demonstrate excellent multi-agent collaboration using Google ADK and Cloud Run's serverless capabilities.
+This project was created to demonstrate **excellent multi-agent collaboration** using Google ADK and Cloud Run's serverless capabilities. It showcases:
+
+- ✅ Multiple ADK agent patterns (Sequential, Parallel, Loop)
+- ✅ Gemini 2.5 Flash for all LLM reasoning
+- ✅ Cloud Run serverless deployment with auto-scaling
+- ✅ Firestore for state persistence
+- ✅ Docker containerization
+- ✅ Event-driven agent communication
+- ✅ Production-ready architecture
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## License
 
