@@ -1,0 +1,5 @@
+This is a test voice answer for the question: Tell me about your experience with Swift?. 
+    I have extensive experience with iOS development using Swift and UIKit. 
+    I've built several production apps with complex architectures including MVVM and Clean Architecture.
+    I'm proficient in SwiftUI, Combine, and modern iOS development practices.
+    I also have experience with testing frameworks like XCTest and UI testing.

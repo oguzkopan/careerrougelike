@@ -1,71 +1,135 @@
-import React, { useState } from 'react';
-import { Task } from '../types';
-import Button from './shared/Button';
+import React from 'react';
+import { WorkTask } from '../types';
+import { Clock, Star } from 'lucide-react';
 
 interface TaskPanelProps {
-  task: Task;
-  onSubmit: (answer: string) => void;
-  onSubmitEventChoice: (choice: string) => void;
-  isLoading: boolean;
+  tasks: WorkTask[];
+  onSelectTask: (taskId: string) => void;
 }
 
-const TaskPanel: React.FC<TaskPanelProps> = ({ task, onSubmit, onSubmitEventChoice, isLoading }) => {
-  const [answer, setAnswer] = useState('');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (answer.trim()) {
-      onSubmit(answer);
-      setAnswer('');
-    }
-  };
-  
-  const isEvent = task.type === 'event' && task.choices && task.choices.length > 0;
+const TaskPanel: React.FC<TaskPanelProps> = ({ tasks, onSelectTask }) => {
+  if (tasks.length === 0) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-400 text-lg">No active tasks at the moment.</p>
+        <p className="text-gray-500 text-sm mt-2">New tasks will appear here soon!</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-6 border-b border-gray-700">
-        <span className="text-sm font-semibold text-indigo-400 uppercase">{task.type}</span>
-        <h2 className="text-2xl font-bold text-white mt-1">{task.title}</h2>
-      </div>
-      <div className="flex-grow p-6 overflow-y-auto">
-        <p className="text-gray-300 whitespace-pre-wrap">{task.description}</p>
-      </div>
-      
-      {isEvent ? (
-        <div className="p-6 border-t border-gray-700 bg-gray-800">
-            <h3 className="text-lg font-semibold text-white mb-4">{task.prompt}</h3>
-            <div className="flex flex-col gap-3">
-                {task.choices?.map((choice, index) => (
-                    <button 
-                        key={index} 
-                        onClick={() => onSubmitEventChoice(choice)} 
-                        disabled={isLoading}
-                        className="w-full text-left p-4 bg-gray-700/50 hover:bg-gray-700 rounded-lg text-white font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {choice}
-                    </button>
-                ))}
-            </div>
-        </div>
-      ) : (
-        <form onSubmit={handleSubmit} className="p-6 border-t border-gray-700 bg-gray-900/50">
-          <label htmlFor="answer" className="block text-sm font-medium text-gray-300 mb-2">{task.prompt}</label>
-          <textarea
-            id="answer"
-            rows={6}
-            className="w-full bg-gray-800 border border-gray-600 rounded-md text-white p-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500"
-            placeholder="Type your answer, code, or plan here..."
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            disabled={isLoading}
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {tasks.map((task) => (
+        <TaskTicket key={task.id} task={task} onSelect={() => onSelectTask(task.id)} />
+      ))}
+    </div>
+  );
+};
+
+// Task Ticket Component
+interface TaskTicketProps {
+  task: WorkTask;
+  onSelect: () => void;
+}
+
+const TaskTicket: React.FC<TaskTicketProps> = ({ task, onSelect }) => {
+  // Color coding by status
+  const getStatusStyles = () => {
+    switch (task.status) {
+      case 'pending':
+        return {
+          border: 'border-gray-600',
+          bg: 'bg-gray-800/50',
+          badge: 'bg-gray-700 text-gray-300',
+          hover: 'hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-500/20',
+        };
+      case 'in-progress':
+        return {
+          border: 'border-blue-600',
+          bg: 'bg-blue-900/20',
+          badge: 'bg-blue-700 text-blue-200',
+          hover: 'hover:border-blue-400 hover:shadow-lg hover:shadow-blue-500/20',
+        };
+      case 'completed':
+        return {
+          border: 'border-green-600',
+          bg: 'bg-green-900/20',
+          badge: 'bg-green-700 text-green-200',
+          hover: 'hover:border-green-400 hover:shadow-lg hover:shadow-green-500/20',
+        };
+      default:
+        return {
+          border: 'border-gray-600',
+          bg: 'bg-gray-800/50',
+          badge: 'bg-gray-700 text-gray-300',
+          hover: 'hover:border-indigo-500',
+        };
+    }
+  };
+
+  const statusStyles = getStatusStyles();
+  const isCompleted = task.status === 'completed';
+
+  const statusLabels = {
+    pending: 'Pending',
+    'in-progress': 'In Progress',
+    completed: 'Completed',
+  };
+
+  // Render difficulty stars
+  const renderDifficultyStars = () => {
+    return (
+      <div className="flex items-center gap-1">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Star
+            key={i}
+            className={`w-4 h-4 ${
+              i < task.difficulty ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'
+            }`}
           />
-          <div className="mt-4 flex justify-end">
-            <Button type="submit" disabled={isLoading || !answer.trim()}>
-              {isLoading ? 'Submitting...' : 'Submit Answer'}
-            </Button>
-          </div>
-        </form>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div
+      className={`p-4 rounded-lg border-2 transition-all duration-200 cursor-pointer ${statusStyles.border} ${statusStyles.bg} ${statusStyles.hover} ${
+        isCompleted ? 'opacity-75' : ''
+      }`}
+      onClick={onSelect}
+    >
+      {/* Header with status badge */}
+      <div className="flex justify-between items-start mb-3">
+        <h3 className="font-semibold text-white text-base flex-1 pr-2 line-clamp-2">
+          {task.title}
+        </h3>
+        <span
+          className={`px-2 py-1 rounded text-xs font-medium whitespace-nowrap ${statusStyles.badge}`}
+        >
+          {statusLabels[task.status]}
+        </span>
+      </div>
+
+      {/* Description */}
+      <p className="text-gray-400 text-sm mb-4 line-clamp-3">{task.description}</p>
+
+      {/* Footer with difficulty and XP */}
+      <div className="flex justify-between items-center pt-3 border-t border-gray-700">
+        <div className="flex items-center gap-2">
+          {renderDifficultyStars()}
+        </div>
+        <div className="flex items-center gap-1 text-sm font-semibold text-green-400">
+          <span>+{task.xpReward} XP</span>
+        </div>
+      </div>
+
+      {/* Due date (if available) */}
+      {task.dueDate && (
+        <div className="flex items-center gap-1 text-xs text-gray-500 mt-2">
+          <Clock className="w-3 h-3" />
+          <span>Due: {new Date(task.dueDate).toLocaleDateString()}</span>
+        </div>
       )}
     </div>
   );

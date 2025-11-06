@@ -9,14 +9,21 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "^1.28.0",
+    "@tanstack/react-query": "^5.90.7",
+    "canvas-confetti": "^1.9.4",
+    "framer-motion": "^12.23.24",
+    "lucide-react": "^0.552.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "lucide-react": "^0.552.0",
-    "@google/genai": "^1.28.0",
+    "react-media-recorder": "^1.7.2",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"

@@ -6,15 +6,15 @@
 
 ## Project Description
 
-CareerRoguelike Backend is a sophisticated multi-agent AI system that demonstrates **excellent multi-agent collaboration** using Google's Agent Development Kit (ADK). The system orchestrates five specialized AI agents that work together to create a gamified career simulation where players progress through interviews, complete profession-specific tasks, handle dynamic career events, and build their professional CV—all powered by coordinated AI agents communicating through ADK's event system.
+CareerRoguelike is a complete AI-powered job market simulator that demonstrates **excellent multi-agent collaboration** using Google's Agent Development Kit (ADK). The system orchestrates five specialized AI agents working together to create a dynamic career simulation where players start as fresh graduates, browse AI-generated job listings, ace interviews, complete profession-specific work tasks, gain experience, level up, and switch jobs to advance their careers—all powered by real-time AI content generation.
 
-The backend showcases three core ADK patterns: **SequentialAgent** for workflow orchestration, **ParallelAgent** for concurrent task generation (achieving 4x speedup), and **LoopAgent** for retry logic with intelligent feedback. Each agent is powered by Gemini 2.5 Flash and communicates through a shared state dictionary, making the entire data flow transparent and debuggable.
+The system showcases advanced multi-agent patterns: **Job Agent** generates realistic job listings across industries and levels, **Interview Agent** creates job-specific questions, **Task Agent** produces profession-appropriate assignments, **Grader Agent** provides fair evaluation with constructive feedback, and **CV Agent** automatically updates resumes based on accomplishments. All agents use Gemini 2.5 Flash and communicate through a shared state dictionary orchestrated by the Workflow Orchestrator.
 
-Deployed on Google Cloud Run with auto-scaling (0-10 instances), the system demonstrates true serverless architecture—scaling to zero when idle for cost optimization, and instantly scaling up under load. State persistence via Firestore ensures sessions survive across requests, while the FastAPI gateway provides a clean REST interface for frontend integration.
+The full-stack application features a React/TypeScript frontend with smooth animations and a Python/FastAPI backend, both deployed on Google Cloud Run with auto-scaling (0-10 instances). The system demonstrates true serverless architecture—scaling to zero when idle for cost optimization, and instantly scaling up under load. Firestore provides persistent state management, ensuring sessions survive across requests and players can resume their careers anytime.
 
-This project exemplifies modern cloud-native development: containerized with Docker, deployed on Cloud Run, leveraging Gemini for AI reasoning, and using Firestore for persistence—all while maintaining clean architecture and excellent code quality.
+This project exemplifies modern cloud-native development: containerized with Docker, deployed on Cloud Run, leveraging Gemini for AI reasoning, using Firestore for persistence, and delivering a complete gamified experience—all while maintaining clean architecture and production-ready code quality.
 
-**Word Count**: 200 words
+**Word Count**: 225 words
 
 ---
 
@@ -98,28 +98,43 @@ This project exemplifies modern cloud-native development: containerized with Doc
 
 ## Key Features
 
+### Complete Job Market Simulation
+- **🎓 Graduation to Career**: Start as fresh graduate, progress to expert level
+- **💼 Dynamic Job Market**: AI-generated listings with realistic companies and positions
+- **🎤 AI Interviews**: Job-specific questions tailored to each position
+- **📋 Work Tasks**: Profession-specific assignments (code for engineers, analysis for analysts)
+- **📈 Career Progression**: Gain XP, level up (1-10), unlock higher-tier positions
+- **📄 Auto-Updated CV**: Resume grows with accomplishments and skills
+- **🔄 Job Switching**: Search for better opportunities while employed
+
 ### Excellent Multi-Agent Collaboration
-- **Specialized Agents**: Each agent has a specific role and expertise
-- **State Sharing**: Agents communicate through shared state dictionary
-- **Event-Driven**: Loose coupling via ADK's event system
-- **Transparent Flow**: All data flow visible and debuggable
+- **Job Agent**: Generates realistic job listings across industries and levels
+- **Interview Agent**: Creates job-specific interview questions
+- **Task Agent**: Produces profession-appropriate work assignments
+- **Grader Agent**: Evaluates submissions with constructive feedback
+- **CV Agent**: Updates resume based on completed work
+- **Workflow Orchestrator**: Coordinates all agents seamlessly
 
 ### Advanced ADK Patterns
-- **Sequential Orchestration**: Root Agent coordinates workflow
-- **Parallel Execution**: 4x speedup for independent operations
-- **Loop Logic**: Intelligent retry with feedback
+- **Sequential Orchestration**: Workflow Orchestrator coordinates agent execution
+- **Parallel Execution**: Concurrent operations for faster response
+- **State Management**: Transparent data flow through shared state
+- **Event-Driven**: Loose coupling via ADK's event system
 
 ### Production-Ready Architecture
-- **Serverless**: Cloud Run with auto-scaling
-- **Persistent**: Firestore for state durability
-- **Scalable**: Handles concurrent sessions efficiently
+- **Full-Stack**: React/TypeScript frontend + Python/FastAPI backend
+- **Serverless**: Cloud Run with auto-scaling (0-10 instances)
+- **Persistent**: Firestore for durable state management
+- **Scalable**: Handles 100+ concurrent sessions
 - **Observable**: Comprehensive logging and monitoring
+- **Secure**: Optional Firebase Auth, CORS, session isolation
 
 ### AI-Powered Intelligence
-- **Gemini 2.5 Flash**: Fast, accurate LLM reasoning
-- **Context-Aware**: Agents understand profession and level
+- **Gemini 2.5 Flash**: Fast, accurate LLM reasoning for all agents
+- **Context-Aware**: Agents understand profession, level, and job context
 - **Adaptive**: Difficulty scales from L1 (junior) to L10 (expert)
 - **Constructive**: Detailed feedback for improvement
+- **Real-Time**: All content generated dynamically, no templates
 
 ---
 

@@ -113,7 +113,14 @@ backend/
    # Edit .env and add your GOOGLE_API_KEY and PROJECT_ID
    ```
 
-5. **Run the FastAPI server locally**:
+5. **Deploy Firestore indexes** (Required):
+   ```bash
+   ./deploy-firestore-indexes.sh
+   # Wait 2-5 minutes for indexes to build
+   # See FIRESTORE_INDEXES.md for details
+   ```
+
+6. **Run the FastAPI server locally**:
    ```bash
    uvicorn gateway.main:app --reload --port 8080
    ```
@@ -174,13 +181,65 @@ curl -X POST http://localhost:8080/sessions/{session_id}/invoke \
 
 ## API Endpoints
 
-### Create Session
+> **📖 Complete API Documentation**: See [API-DOCUMENTATION.md](../API-DOCUMENTATION.md) for full reference with examples
 
-Creates a new game session with specified profession and level.
+### Quick Reference
 
-**Endpoint**: `POST /sessions`
+#### Session Management
 
-**Request Body**:
+**Create Session**: `POST /sessions`
+```bash
+curl -X POST http://localhost:8080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 1}'
+```
+
+**Get Session**: `GET /sessions/{session_id}`
+
+**Get Player State**: `GET /sessions/{session_id}/state`
+
+**Get CV**: `GET /sessions/{session_id}/cv`
+
+#### Job Market
+
+**Generate Jobs**: `POST /sessions/{session_id}/jobs/generate`
+```bash
+curl -X POST http://localhost:8080/sessions/{sid}/jobs/generate \
+  -H "Content-Type: application/json" \
+  -d '{"player_level": 3, "count": 10}'
+```
+
+**Get Job Details**: `GET /sessions/{session_id}/jobs/{job_id}`
+
+**Refresh Jobs**: `POST /sessions/{session_id}/jobs/refresh`
+
+#### Interview
+
+**Start Interview**: `POST /sessions/{session_id}/jobs/{job_id}/interview`
+
+**Submit Answers**: `POST /sessions/{session_id}/jobs/{job_id}/interview/submit`
+```bash
+curl -X POST http://localhost:8080/sessions/{sid}/jobs/{jid}/interview/submit \
+  -H "Content-Type: application/json" \
+  -d '{"answers": {"q1": "answer1", "q2": "answer2"}}'
+```
+
+**Accept Job**: `POST /sessions/{session_id}/jobs/{job_id}/accept`
+
+#### Tasks
+
+**Get Tasks**: `GET /sessions/{session_id}/tasks`
+
+**Submit Task**: `POST /sessions/{session_id}/tasks/{task_id}/submit`
+```bash
+curl -X POST http://localhost:8080/sessions/{sid}/tasks/{tid}/submit \
+  -H "Content-Type: application/json" \
+  -d '{"solution": "Your solution here..."}'
+```
+
+### Legacy Endpoints (Original System)
+
+**Create Session**: `POST /sessions`
 ```json
 {
   "profession": "ios_engineer",  // Options: ios_engineer, data_analyst, product_designer, sales_associate
@@ -264,6 +323,55 @@ curl -X POST http://localhost:8080/sessions/sess-123/invoke \
 curl -X POST http://localhost:8080/sessions/sess-123/invoke \
   -H "Content-Type: application/json" \
   -d '{"action": "generate_task", "data": {}}'
+```
+
+---
+
+### Complete Job Market Flow Example
+
+```bash
+# 1. Create session
+SESSION_ID=$(curl -X POST http://localhost:8080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"profession": "ios_engineer", "level": 1}' | jq -r '.session_id')
+
+# 2. Generate job listings
+curl -X POST http://localhost:8080/sessions/$SESSION_ID/jobs/generate \
+  -H "Content-Type: application/json" \
+  -d '{"player_level": 1, "count": 10}'
+
+# 3. Start interview for a job
+JOB_ID="job-abc123"  # From previous response
+curl -X POST http://localhost:8080/sessions/$SESSION_ID/jobs/$JOB_ID/interview
+
+# 4. Submit interview answers
+curl -X POST http://localhost:8080/sessions/$SESSION_ID/jobs/$JOB_ID/interview/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "answers": {
+      "q1": "Weak references don'\''t increase retain count...",
+      "q2": "I would use cell reuse and pagination...",
+      "q3": "SwiftUI is declarative..."
+    }
+  }'
+
+# 5. Accept job offer (if passed)
+curl -X POST http://localhost:8080/sessions/$SESSION_ID/jobs/$JOB_ID/accept
+
+# 6. Get active tasks
+curl http://localhost:8080/sessions/$SESSION_ID/tasks
+
+# 7. Submit task solution
+TASK_ID="task-xyz789"  # From previous response
+curl -X POST http://localhost:8080/sessions/$SESSION_ID/tasks/$TASK_ID/submit \
+  -H "Content-Type: application/json" \
+  -d '{"solution": "I implemented OAuth 2.0 using..."}'
+
+# 8. Check player state (level, XP, current job)
+curl http://localhost:8080/sessions/$SESSION_ID/state
+
+# 9. View updated CV
+curl http://localhost:8080/sessions/$SESSION_ID/cv
 ```
 
 ---

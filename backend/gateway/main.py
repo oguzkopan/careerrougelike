@@ -11,9 +11,11 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status, Depends
+from fastapi import FastAPI, HTTPException, status, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+import tempfile
+import os
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -22,6 +24,7 @@ from google.adk.sessions import InMemorySessionService
 from shared import model_config  # This configures Vertex AI/API key
 
 from agents.root_agent import root_agent
+from agents.workflow_orchestrator import WorkflowOrchestrator
 from shared.firestore_manager import FirestoreManager
 from shared.config import PROJECT_ID, USE_VERTEX_AI
 from gateway.auth import get_current_user, optional_auth
@@ -37,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Global instances (initialized in lifespan)
 firestore_manager: Optional[FirestoreManager] = None
 adk_runner: Optional[Runner] = None
+workflow_orchestrator: Optional[WorkflowOrchestrator] = None
 
 
 @asynccontextmanager
@@ -45,7 +49,7 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for startup and shutdown events
     """
     # Startup: Initialize Firestore and ADK Runner
-    global firestore_manager, adk_runner
+    global firestore_manager, adk_runner, workflow_orchestrator
     
     auth_method = "Vertex AI" if USE_VERTEX_AI else "Google AI API"
     logger.info(f"Starting backend with {auth_method} authentication")
@@ -60,6 +64,9 @@ async def lifespan(app: FastAPI):
         app_name="career-roguelike",
         session_service=session_service
     )
+    
+    logger.info("Initializing Workflow Orchestrator...")
+    workflow_orchestrator = WorkflowOrchestrator()
     
     logger.info(f"Backend startup complete (Project: {PROJECT_ID}, Auth: {auth_method})")
     
@@ -132,6 +139,12 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.head("/health", status_code=status.HTTP_200_OK)
+async def health_check_head():
+    """Health check HEAD endpoint for Cloud Run"""
+    return {"status": "healthy"}
+
+
 logger.info("FastAPI application initialized")
 
 
@@ -159,12 +172,30 @@ async def create_session(
         # Generate unique session ID
         session_id = f"sess-{uuid.uuid4().hex[:12]}"
         
-        # Initialize session data
+        # Calculate initial XP requirements
+        xp_to_next_level = firestore_manager.calculate_xp_to_next_level(request.level, 0)
+        
+        # Initialize session data with graduated status
         session_data = {
             "session_id": session_id,
             "profession": request.profession,
             "level": request.level,
-            "status": "new",
+            "status": "graduated",  # Player starts as fresh graduate
+            "xp": 0,
+            "xp_to_next_level": xp_to_next_level,
+            "current_job": None,
+            "job_history": [],
+            "cv_data": {
+                "experience": [],
+                "skills": [],
+                "accomplishments": []
+            },
+            "stats": {
+                "tasks_completed": 0,
+                "interviews_passed": 0,
+                "interviews_failed": 0,
+                "jobs_held": 0
+            },
             "state": {}
         }
         
@@ -175,7 +206,7 @@ async def create_session(
         # Create session in Firestore
         firestore_manager.create_session(session_id, session_data)
         
-        logger.info(f"Created session {session_id} for profession={request.profession}, level={request.level}, user={user_id or 'anonymous'}")
+        logger.info(f"Created session {session_id} for profession={request.profession}, level={request.level}, status=graduated, user={user_id or 'anonymous'}")
         
         return CreateSessionResponse(session_id=session_id)
         
@@ -394,6 +425,82 @@ async def get_session(
         )
 
 
+@app.get("/sessions/{session_id}/state")
+async def get_player_state(
+    session_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get full player state for a session
+    
+    Args:
+        session_id: Unique session identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Complete player state including level, XP, current job, stats
+        
+    Raises:
+        HTTPException: If session not found or access denied
+    """
+    try:
+        session_data = firestore_manager.get_session(session_id)
+        
+        # Verify user owns this session (if authenticated)
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Extract player state
+        current_level = session_data.get("level", 1)
+        current_xp = session_data.get("xp", 0)
+        
+        # Calculate XP to next level if not stored
+        xp_to_next_level = session_data.get("xp_to_next_level")
+        if xp_to_next_level is None:
+            xp_to_next_level = firestore_manager.calculate_xp_to_next_level(current_level, current_xp)
+        
+        player_state = {
+            "session_id": session_id,
+            "status": session_data.get("status", "graduated"),
+            "profession": session_data.get("profession", ""),
+            "level": current_level,
+            "xp": current_xp,
+            "xp_to_next_level": xp_to_next_level,
+            "current_job": session_data.get("current_job"),
+            "job_history": session_data.get("job_history", []),
+            "stats": session_data.get("stats", {
+                "tasks_completed": 0,
+                "interviews_passed": 0,
+                "interviews_failed": 0,
+                "jobs_held": 0
+            }),
+            "cv_data": session_data.get("cv_data", {
+                "experience": [],
+                "skills": [],
+                "accomplishments": []
+            })
+        }
+        
+        return player_state
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get player state for session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get player state: {str(e)}"
+        )
+
+
 @app.get("/sessions/{session_id}/cv")
 async def get_cv(
     session_id: str,
@@ -444,4 +551,1514 @@ async def get_cv(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get CV: {str(e)}"
+        )
+
+
+# ==================== Job Market Flow Endpoints ====================
+
+class GenerateJobsRequest(BaseModel):
+    """Request model for generating job listings"""
+    player_level: int = Field(..., ge=1, le=10, description="Player's current level (1-10)")
+    count: int = Field(default=10, ge=1, le=20, description="Number of jobs to generate (1-20)")
+
+
+@app.post("/sessions/{session_id}/jobs/generate")
+async def generate_jobs(
+    session_id: str,
+    request: GenerateJobsRequest,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Generate job listings for a session
+    
+    Args:
+        session_id: Unique session identifier
+        request: Job generation request with player_level and count
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Array of job listings
+        
+    Raises:
+        HTTPException: If session not found, access denied, or generation fails
+    """
+    try:
+        # Verify session exists
+        session_data = firestore_manager.get_session(session_id)
+        
+        # Verify user owns this session (if authenticated)
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Get profession from session
+        profession = session_data.get("profession", "ios_engineer")
+        
+        logger.info(f"Generating {request.count} jobs for session {session_id}, profession {profession}, level {request.player_level}")
+        
+        # Generate jobs using workflow orchestrator
+        job_listings = await workflow_orchestrator.generate_jobs(
+            session_id=session_id,
+            player_level=request.player_level,
+            count=request.count,
+            profession=profession
+        )
+        
+        # Save jobs to Firestore with validation
+        import uuid
+        for job in job_listings:
+            job_id = f"job-{uuid.uuid4().hex[:12]}"
+            job['id'] = job_id
+            
+            # Ensure required fields exist
+            if not job.get('company_name'):
+                job['company_name'] = "TechCorp Inc"
+                logger.warning(f"Job {job_id} missing company_name, using default")
+            if not job.get('position'):
+                job['position'] = "Software Engineer"
+                logger.warning(f"Job {job_id} missing position, using default")
+            if not job.get('description'):
+                job['description'] = "Exciting opportunity to join our team"
+                logger.warning(f"Job {job_id} missing description, using default")
+            
+            firestore_manager.create_job(job_id, session_id, job)
+        
+        logger.info(f"Successfully generated and saved {len(job_listings)} jobs")
+        
+        return {"jobs": job_listings}
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate jobs for session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate jobs: {str(e)}"
+        )
+
+
+@app.get("/sessions/{session_id}/jobs/{job_id}")
+async def get_job_detail(
+    session_id: str,
+    job_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get detailed job information
+    
+    Args:
+        session_id: Unique session identifier
+        job_id: Unique job identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Full job details including description, requirements, responsibilities, benefits,
+        and eligibility status
+        
+    Raises:
+        HTTPException: If session or job not found, or access denied
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve job from Firestore
+        job_data = firestore_manager.get_job(job_id)
+        
+        # Verify job belongs to this session
+        if job_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job does not belong to this session"
+            )
+        
+        # Check if player is eligible for this job
+        player_level = session_data.get("level", 1)
+        job_level = job_data.get("level", "entry")
+        can_apply = firestore_manager.can_apply_to_job(player_level, job_level)
+        
+        # Add eligibility information to response
+        job_data["can_apply"] = can_apply
+        if not can_apply:
+            job_data["eligibility_message"] = f"You need to be level {get_min_level_for_job(job_level)} or higher to apply for this {job_level}-level position."
+        
+        return job_data
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get job {job_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get job details: {str(e)}"
+        )
+
+
+def get_min_level_for_job(job_level: str) -> int:
+    """
+    Get minimum player level required for a job level.
+    
+    Args:
+        job_level: Job level string (entry, mid, senior)
+    
+    Returns:
+        Minimum player level required
+    """
+    job_level_lower = job_level.lower()
+    if job_level_lower == "entry":
+        return 1
+    elif job_level_lower == "mid":
+        return 4
+    elif job_level_lower == "senior":
+        return 8
+    else:
+        return 1
+
+
+@app.post("/sessions/{session_id}/jobs/{job_id}/interview")
+async def start_interview(
+    session_id: str,
+    job_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Start an interview for a job
+    
+    Args:
+        session_id: Unique session identifier
+        job_id: Unique job identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Array of interview questions
+        
+    Raises:
+        HTTPException: If session or job not found, or interview generation fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve job details
+        job_data = firestore_manager.get_job(job_id)
+        
+        # Verify job belongs to this session
+        if job_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job does not belong to this session"
+            )
+        
+        logger.info(f"Starting interview for job {job_id} in session {session_id}")
+        
+        # Generate interview questions
+        questions = await workflow_orchestrator.conduct_interview(
+            session_id=session_id,
+            job_title=job_data.get("position", ""),
+            company_name=job_data.get("company_name", ""),
+            requirements=job_data.get("requirements", []),
+            level=job_data.get("level", "entry")
+        )
+        
+        # Add unique IDs to questions
+        import uuid
+        for i, question in enumerate(questions):
+            if "id" not in question:
+                question["id"] = f"q{i+1}"
+        
+        # Store questions in session state for grading
+        firestore_manager.update_session(session_id, {
+            "interview_questions": questions,
+            "interview_job_id": job_id
+        })
+        
+        logger.info(f"Generated {len(questions)} interview questions")
+        
+        return {"questions": questions}
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start interview: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start interview: {str(e)}"
+        )
+
+
+class SubmitInterviewRequest(BaseModel):
+    """Request model for submitting interview answers"""
+    answers: Dict[str, str] = Field(..., description="Dictionary mapping question IDs to answers")
+
+
+@app.post("/sessions/{session_id}/jobs/{job_id}/interview/submit")
+async def submit_interview(
+    session_id: str,
+    job_id: str,
+    request: SubmitInterviewRequest,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Submit interview answers for grading
+    
+    Args:
+        session_id: Unique session identifier
+        job_id: Unique job identifier
+        request: Interview submission with answers dictionary
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Interview result with pass/fail and feedback
+        
+    Raises:
+        HTTPException: If session or job not found, or grading fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve stored interview questions
+        questions = session_data.get("interview_questions", [])
+        stored_job_id = session_data.get("interview_job_id")
+        
+        if not questions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active interview found. Please start an interview first."
+            )
+        
+        if stored_job_id != job_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Interview questions do not match this job"
+            )
+        
+        logger.info(f"Grading interview for job {job_id} in session {session_id}")
+        
+        # Grade interview answers
+        result = await workflow_orchestrator.grade_interview(
+            session_id=session_id,
+            questions=questions,
+            answers=request.answers
+        )
+        
+        # Update session stats
+        stats = session_data.get("stats", {})
+        if result["passed"]:
+            stats["interviews_passed"] = stats.get("interviews_passed", 0) + 1
+        else:
+            stats["interviews_failed"] = stats.get("interviews_failed", 0) + 1
+        
+        firestore_manager.update_session(session_id, {"stats": stats})
+        
+        # Update job status
+        firestore_manager.update_job_status(job_id, "applied")
+        
+        logger.info(f"Interview graded: passed={result['passed']}, score={result['overall_score']}")
+        
+        return result
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to submit interview: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit interview: {str(e)}"
+        )
+
+
+@app.post("/sessions/{session_id}/jobs/{job_id}/accept")
+async def accept_job_offer(
+    session_id: str,
+    job_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Accept a job offer after passing interview
+    
+    Args:
+        session_id: Unique session identifier
+        job_id: Unique job identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Success message with updated player state
+        
+    Raises:
+        HTTPException: If session or job not found, or acceptance fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve job details
+        job_data = firestore_manager.get_job(job_id)
+        
+        # Verify job belongs to this session
+        if job_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job does not belong to this session"
+            )
+        
+        logger.info(f"Accepting job {job_id} for session {session_id}")
+        
+        # Get current CV data
+        current_cv = session_data.get("cv_data", {"experience": [], "skills": []})
+        
+        # Update CV with new job
+        from datetime import datetime
+        new_job_data = {
+            "company_name": job_data.get("company_name", ""),
+            "position": job_data.get("position", ""),
+            "start_date": datetime.utcnow().isoformat(),
+            "accomplishments": []
+        }
+        
+        updated_cv = await workflow_orchestrator.update_cv(
+            session_id=session_id,
+            current_cv=current_cv,
+            action="add_job",
+            action_data=new_job_data
+        )
+        
+        # Update player status to employed
+        player_state = {
+            "status": "employed",
+            "current_job": {
+                "job_id": job_id,
+                "company_name": job_data.get("company_name", ""),
+                "position": job_data.get("position", ""),
+                "start_date": new_job_data["start_date"],
+                "salary": job_data.get("salary_range", {}).get("max", 0)
+            },
+            "cv_data": updated_cv
+        }
+        
+        firestore_manager.update_player_state(session_id, player_state)
+        
+        # Add job to history
+        firestore_manager.add_job_to_history(session_id, player_state["current_job"])
+        
+        # Generate initial tasks (3-5 tasks)
+        import uuid
+        tasks_to_generate = 3
+        generated_tasks = []
+        
+        for i in range(tasks_to_generate):
+            task = await workflow_orchestrator.generate_task(
+                session_id=session_id,
+                job_title=job_data.get("position", ""),
+                company_name=job_data.get("company_name", ""),
+                player_level=session_data.get("level", 1),
+                tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0) + i
+            )
+            
+            task_id = f"task-{uuid.uuid4().hex[:12]}"
+            task["id"] = task_id
+            
+            firestore_manager.create_task(task_id, session_id, task)
+            generated_tasks.append(task)
+        
+        logger.info(f"Job accepted, CV updated, and {len(generated_tasks)} tasks generated")
+        
+        # Update stats
+        stats = session_data.get("stats", {})
+        stats["jobs_held"] = stats.get("jobs_held", 0) + 1
+        firestore_manager.update_session(session_id, {"stats": stats})
+        
+        return {
+            "success": True,
+            "message": "Job offer accepted successfully",
+            "player_state": player_state,
+            "tasks": generated_tasks
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to accept job offer: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to accept job offer: {str(e)}"
+        )
+
+
+@app.get("/sessions/{session_id}/tasks")
+async def get_tasks(
+    session_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get active tasks for a session
+    
+    Args:
+        session_id: Unique session identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Array of tasks with status
+        
+    Raises:
+        HTTPException: If session not found or access denied
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve active tasks
+        tasks = firestore_manager.get_active_tasks(session_id)
+        
+        return {"tasks": tasks}
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get tasks for session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get tasks: {str(e)}"
+        )
+
+
+class SubmitTaskRequest(BaseModel):
+    """Request model for submitting task solution"""
+    solution: str = Field(..., description="Player's solution to the task")
+
+
+@app.post("/sessions/{session_id}/tasks/{task_id}/submit")
+async def submit_task(
+    session_id: str,
+    task_id: str,
+    request: SubmitTaskRequest,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Submit a task solution for grading
+    
+    Args:
+        session_id: Unique session identifier
+        task_id: Unique task identifier
+        request: Task submission with solution text
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Grading result, XP gained, level up status
+        
+    Raises:
+        HTTPException: If session or task not found, or grading fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve task
+        task_data = firestore_manager.get_task(task_id)
+        
+        # Verify task belongs to this session
+        if task_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Task does not belong to this session"
+            )
+        
+        logger.info(f"Grading task {task_id} for session {session_id}")
+        
+        # Grade task
+        result = await workflow_orchestrator.grade_task(
+            session_id=session_id,
+            task=task_data,
+            solution=request.solution,
+            player_level=session_data.get("level", 1),
+            current_xp=session_data.get("xp", 0)
+        )
+        
+        # Update task status
+        firestore_manager.update_task(task_id, {
+            "status": "completed" if result["passed"] else "pending",
+            "solution": request.solution,
+            "score": result["score"],
+            "feedback": result["feedback"]
+        })
+        
+        # Award XP and check for level up
+        if result["passed"]:
+            xp_result = firestore_manager.add_xp(session_id, result["xp_gained"])
+            result["new_xp"] = xp_result["new_xp"]
+            result["new_level"] = xp_result["new_level"]
+            result["level_up"] = xp_result["leveled_up"]
+            result["xp_to_next_level"] = xp_result["xp_to_next_level"]
+            
+            # Generate new task if needed
+            active_tasks = firestore_manager.get_active_tasks(session_id)
+            if len(active_tasks) < 3:
+                import uuid
+                new_task = await workflow_orchestrator.generate_task(
+                    session_id=session_id,
+                    job_title=session_data.get("current_job", {}).get("position", ""),
+                    company_name=session_data.get("current_job", {}).get("company_name", ""),
+                    player_level=result["new_level"],
+                    tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0)
+                )
+                
+                new_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                new_task["id"] = new_task_id
+                firestore_manager.create_task(new_task_id, session_id, new_task)
+                result["new_task"] = new_task
+            
+            # Update CV with accomplishment
+            current_cv = session_data.get("cv_data", {"experience": [], "skills": []})
+            accomplishment = f"Completed: {task_data.get('title', 'task')}"
+            
+            updated_cv = await workflow_orchestrator.update_cv(
+                session_id=session_id,
+                current_cv=current_cv,
+                action="update_accomplishments",
+                action_data={"accomplishment": accomplishment}
+            )
+            
+            firestore_manager.update_cv(session_id, updated_cv)
+        
+        logger.info(f"Task graded: passed={result['passed']}, xp_gained={result.get('xp_gained', 0)}")
+        
+        return result
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task {task_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to submit task: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to submit task: {str(e)}"
+        )
+
+
+@app.post("/sessions/{session_id}/jobs/refresh")
+async def refresh_jobs(
+    session_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Refresh job listings by marking old ones as expired and generating new ones
+    
+    Args:
+        session_id: Unique session identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        New job listings
+        
+    Raises:
+        HTTPException: If session not found or refresh fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        logger.info(f"Refreshing jobs for session {session_id}")
+        
+        # Mark old active jobs as expired
+        old_jobs = firestore_manager.get_jobs_by_session(session_id, status="active")
+        for job in old_jobs:
+            firestore_manager.update_job_status(job["job_id"], "expired")
+        
+        logger.info(f"Marked {len(old_jobs)} old jobs as expired")
+        
+        # Generate new jobs
+        player_level = session_data.get("level", 1)
+        profession = session_data.get("profession", "ios_engineer")
+        job_listings = await workflow_orchestrator.generate_jobs(
+            session_id=session_id,
+            player_level=player_level,
+            count=10,
+            profession=profession
+        )
+        
+        # Save new jobs to Firestore
+        import uuid
+        for job in job_listings:
+            job_id = f"job-{uuid.uuid4().hex[:12]}"
+            job['id'] = job_id
+            firestore_manager.create_job(job_id, session_id, job)
+        
+        logger.info(f"Generated and saved {len(job_listings)} new jobs")
+        
+        return {"jobs": job_listings}
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to refresh jobs for session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to refresh jobs: {str(e)}"
+        )
+
+
+# ==================== Voice Input Endpoints ====================
+
+@app.post("/sessions/{session_id}/interview/voice")
+async def submit_interview_voice_answer(
+    session_id: str,
+    question_id: str = Form(...),
+    audio: UploadFile = File(...),
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Submit a voice answer for an interview question
+    
+    Args:
+        session_id: Unique session identifier
+        question_id: Question identifier
+        audio: Audio file (WebM, MP3, or WAV)
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Transcription and grading result
+        
+    Raises:
+        HTTPException: If session not found or processing fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve stored interview questions
+        questions = session_data.get("interview_questions", [])
+        
+        if not questions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active interview found. Please start an interview first."
+            )
+        
+        # Find the specific question
+        question_data = None
+        for q in questions:
+            if q.get("id") == question_id:
+                question_data = q
+                break
+        
+        if not question_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Question {question_id} not found"
+            )
+        
+        logger.info(f"Processing voice answer for question {question_id} in session {session_id}")
+        
+        # Save audio file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+            content = await audio.read()
+            temp_file.write(content)
+            temp_audio_path = temp_file.name
+        
+        try:
+            # Process voice input using Gemini multimodal
+            result = await workflow_orchestrator.grade_voice_answer(
+                session_id=session_id,
+                question=question_data.get("question", ""),
+                expected_answer=question_data.get("expected_answer", ""),
+                audio_path=temp_audio_path
+            )
+            
+            logger.info(f"Voice answer processed: transcription length={len(result.get('transcription', ''))}, score={result.get('score', 0)}")
+            
+            return result
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to process voice answer: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process voice answer: {str(e)}"
+        )
+
+
+@app.post("/sessions/{session_id}/tasks/{task_id}/voice")
+async def submit_task_voice_solution(
+    session_id: str,
+    task_id: str,
+    audio: UploadFile = File(...),
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Submit a voice solution for a task
+    
+    Args:
+        session_id: Unique session identifier
+        task_id: Task identifier
+        audio: Audio file (WebM, MP3, or WAV)
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Transcription and grading result with XP
+        
+    Raises:
+        HTTPException: If session or task not found, or processing fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve task
+        task_data = firestore_manager.get_task(task_id)
+        
+        # Verify task belongs to this session
+        if task_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Task does not belong to this session"
+            )
+        
+        logger.info(f"Processing voice solution for task {task_id} in session {session_id}")
+        
+        # Save audio file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+            content = await audio.read()
+            temp_file.write(content)
+            temp_audio_path = temp_file.name
+        
+        try:
+            # Process voice input using Gemini multimodal
+            result = await workflow_orchestrator.grade_voice_task(
+                session_id=session_id,
+                task=task_data,
+                audio_path=temp_audio_path,
+                player_level=session_data.get("level", 1),
+                current_xp=session_data.get("xp", 0)
+            )
+            
+            # Update task status
+            firestore_manager.update_task(task_id, {
+                "status": "completed" if result["passed"] else "pending",
+                "solution": result.get("transcription", "[Voice Solution]"),
+                "score": result["score"],
+                "feedback": result["feedback"]
+            })
+            
+            # Award XP and check for level up
+            if result["passed"]:
+                xp_result = firestore_manager.add_xp(session_id, result["xp_gained"])
+                result["new_xp"] = xp_result["new_xp"]
+                result["new_level"] = xp_result["new_level"]
+                result["level_up"] = xp_result["leveled_up"]
+                result["xp_to_next_level"] = xp_result["xp_to_next_level"]
+                
+                # Generate new task if needed
+                active_tasks = firestore_manager.get_active_tasks(session_id)
+                if len(active_tasks) < 3:
+                    import uuid
+                    new_task = await workflow_orchestrator.generate_task(
+                        session_id=session_id,
+                        job_title=session_data.get("current_job", {}).get("position", ""),
+                        company_name=session_data.get("current_job", {}).get("company_name", ""),
+                        player_level=result["new_level"],
+                        tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0)
+                    )
+                    
+                    new_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                    new_task["id"] = new_task_id
+                    firestore_manager.create_task(new_task_id, session_id, new_task)
+                    result["new_task"] = new_task
+                
+                # Update CV with accomplishment
+                current_cv = session_data.get("cv_data", {"experience": [], "skills": []})
+                accomplishment = f"Completed: {task_data.get('title', 'task')}"
+                
+                updated_cv = await workflow_orchestrator.update_cv(
+                    session_id=session_id,
+                    current_cv=current_cv,
+                    action="update_accomplishments",
+                    action_data={"accomplishment": accomplishment}
+                )
+                
+                firestore_manager.update_cv(session_id, updated_cv)
+            
+            logger.info(f"Voice task graded: passed={result['passed']}, xp_gained={result.get('xp_gained', 0)}")
+            
+            return result
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task {task_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to process voice task solution: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process voice task solution: {str(e)}"
+        )
+
+
+# ==================== Meeting System Endpoints ====================
+
+class GenerateMeetingRequest(BaseModel):
+    """Request model for generating a meeting"""
+    meeting_type: str = Field(..., description="Type of meeting (one_on_one, team_meeting, stakeholder_presentation, performance_review, project_update, feedback_session)")
+
+
+@app.post("/sessions/{session_id}/meetings/generate")
+async def generate_meeting(
+    session_id: str,
+    request: GenerateMeetingRequest,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Generate a virtual meeting scenario
+    
+    Args:
+        session_id: Unique session identifier
+        request: Meeting generation request with meeting type
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Meeting data with participants, topics, and context
+        
+    Raises:
+        HTTPException: If session not found or generation fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Verify player is employed
+        if session_data.get("status") != "employed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Player must be employed to attend meetings"
+            )
+        
+        current_job = session_data.get("current_job", {})
+        if not current_job:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active job found"
+            )
+        
+        logger.info(f"Generating {request.meeting_type} meeting for session {session_id}")
+        
+        # Calculate recent performance based on completed tasks
+        stats = session_data.get("stats", {})
+        tasks_completed = stats.get("tasks_completed", 0)
+        if tasks_completed < 3:
+            recent_performance = "new_employee"
+        elif tasks_completed < 10:
+            recent_performance = "developing"
+        else:
+            recent_performance = "strong"
+        
+        # Generate meeting using workflow orchestrator
+        meeting_data = await workflow_orchestrator.generate_meeting(
+            session_id=session_id,
+            meeting_type=request.meeting_type,
+            job_title=current_job.get("position", ""),
+            company_name=current_job.get("company_name", ""),
+            player_level=session_data.get("level", 1),
+            recent_performance=recent_performance
+        )
+        
+        # Save meeting to Firestore
+        import uuid
+        meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+        meeting_data["id"] = meeting_id
+        meeting_data["session_id"] = session_id
+        meeting_data["status"] = "active"
+        meeting_data["responses"] = []
+        meeting_data["current_topic_index"] = 0
+        
+        firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+        
+        logger.info(f"Generated meeting {meeting_id} with {len(meeting_data.get('topics', []))} topics")
+        
+        return meeting_data
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate meeting: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate meeting: {str(e)}"
+        )
+
+
+@app.get("/sessions/{session_id}/meetings/{meeting_id}")
+async def get_meeting(
+    session_id: str,
+    meeting_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get meeting details and current state
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Meeting data with participants, topics, and response history
+        
+    Raises:
+        HTTPException: If session or meeting not found
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        return meeting_data
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get meeting {meeting_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get meeting: {str(e)}"
+        )
+
+
+class RespondToMeetingRequest(BaseModel):
+    """Request model for responding to a meeting topic"""
+    topic_id: str = Field(..., description="ID of the topic being responded to")
+    response: str = Field(..., description="Player's response to the topic")
+
+
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/respond")
+async def respond_to_meeting(
+    session_id: str,
+    meeting_id: str,
+    request: RespondToMeetingRequest,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Submit a response to a meeting topic and get AI colleague responses
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        request: Response with topic_id and player's response text
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        AI colleague responses and evaluation
+        
+    Raises:
+        HTTPException: If session or meeting not found, or response fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        # Find the topic
+        topics = meeting_data.get("topics", [])
+        topic_data = None
+        for topic in topics:
+            if topic.get("id") == request.topic_id:
+                topic_data = topic
+                break
+        
+        if not topic_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Topic {request.topic_id} not found in meeting"
+            )
+        
+        logger.info(f"Processing response to topic {request.topic_id} in meeting {meeting_id}")
+        
+        # Generate AI colleague responses
+        participants = meeting_data.get("participants", [])
+        ai_responses = []
+        
+        for participant in participants:
+            if participant.get("role") != "Player":
+                colleague_response = await workflow_orchestrator.generate_meeting_response(
+                    session_id=session_id,
+                    meeting_context=meeting_data.get("context", ""),
+                    current_topic=topic_data.get("question", ""),
+                    participant_name=participant.get("name", ""),
+                    participant_role=participant.get("role", ""),
+                    participant_personality=participant.get("personality", ""),
+                    player_response=request.response
+                )
+                ai_responses.append(colleague_response)
+        
+        # Grade the player's response
+        evaluation = await workflow_orchestrator.grade_meeting_response(
+            session_id=session_id,
+            topic=topic_data,
+            player_response=request.response,
+            player_level=session_data.get("level", 1)
+        )
+        
+        # Store response in meeting data
+        response_record = {
+            "topic_id": request.topic_id,
+            "player_response": request.response,
+            "ai_responses": ai_responses,
+            "evaluation": evaluation,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        meeting_responses = meeting_data.get("responses", [])
+        meeting_responses.append(response_record)
+        
+        # Update current topic index
+        current_index = meeting_data.get("current_topic_index", 0)
+        firestore_manager.update_meeting(meeting_id, {
+            "responses": meeting_responses,
+            "current_topic_index": current_index + 1
+        })
+        
+        logger.info(f"Meeting response processed: score={evaluation.get('score', 0)}")
+        
+        return {
+            "ai_responses": ai_responses,
+            "evaluation": evaluation,
+            "next_topic_index": current_index + 1,
+            "meeting_complete": (current_index + 1) >= len(topics)
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to respond to meeting: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to respond to meeting: {str(e)}"
+        )
+
+
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/complete")
+async def complete_meeting(
+    session_id: str,
+    meeting_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Complete a meeting and award XP based on performance
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Meeting summary with overall score and XP gained
+        
+    Raises:
+        HTTPException: If session or meeting not found
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        logger.info(f"Completing meeting {meeting_id} for session {session_id}")
+        
+        # Calculate overall meeting score
+        responses = meeting_data.get("responses", [])
+        if not responses:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No responses recorded for this meeting"
+            )
+        
+        total_score = 0
+        for response in responses:
+            evaluation = response.get("evaluation", {})
+            total_score += evaluation.get("score", 0)
+        
+        overall_score = total_score / len(responses) if responses else 0
+        
+        # Award XP based on meeting performance
+        # Base XP: 20-50 depending on meeting type and performance
+        meeting_type = meeting_data.get("meeting_type", "one_on_one")
+        base_xp = {
+            "one_on_one": 20,
+            "team_meeting": 30,
+            "stakeholder_presentation": 50,
+            "performance_review": 40,
+            "project_update": 30,
+            "feedback_session": 25
+        }.get(meeting_type, 30)
+        
+        # Scale XP by performance (0.5x to 1.5x)
+        xp_multiplier = 0.5 + (overall_score / 100)
+        xp_gained = int(base_xp * xp_multiplier)
+        
+        # Award XP
+        xp_result = firestore_manager.add_xp(session_id, xp_gained)
+        
+        # Update meeting status
+        firestore_manager.update_meeting(meeting_id, {
+            "status": "completed",
+            "overall_score": overall_score,
+            "xp_gained": xp_gained,
+            "completed_at": datetime.utcnow().isoformat()
+        })
+        
+        # Track meeting performance for career progression
+        meeting_performance = {
+            "meeting_id": meeting_id,
+            "meeting_type": meeting_type,
+            "score": overall_score,
+            "xp_gained": xp_gained,
+            "date": datetime.utcnow().isoformat()
+        }
+        
+        # Store in session for future reference
+        meeting_history = session_data.get("meeting_history", [])
+        meeting_history.append(meeting_performance)
+        firestore_manager.update_session(session_id, {"meeting_history": meeting_history})
+        
+        logger.info(f"Meeting completed: score={overall_score}, xp_gained={xp_gained}")
+        
+        return {
+            "success": True,
+            "overall_score": overall_score,
+            "xp_gained": xp_gained,
+            "new_xp": xp_result["new_xp"],
+            "new_level": xp_result["new_level"],
+            "level_up": xp_result["leveled_up"],
+            "xp_to_next_level": xp_result["xp_to_next_level"],
+            "meeting_summary": {
+                "topics_discussed": len(responses),
+                "average_score": overall_score,
+                "feedback": "Great participation!" if overall_score >= 70 else "Good effort, keep improving!"
+            }
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to complete meeting: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to complete meeting: {str(e)}"
+        )
+
+
+# ==================== Event System Endpoints ====================
+
+@app.get("/sessions/{session_id}/events/check")
+async def check_for_events(
+    session_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Check if any random events should be triggered (e.g., manager meeting requests)
+    
+    Args:
+        session_id: Unique session identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Event data if an event is triggered, null otherwise
+        
+    Raises:
+        HTTPException: If session not found
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Only check for events if player is employed
+        if session_data.get("status") != "employed":
+            return {"event": None}
+        
+        # Calculate recent performance
+        stats = session_data.get("stats", {})
+        tasks_completed = stats.get("tasks_completed", 0)
+        meeting_history = session_data.get("meeting_history", [])
+        
+        if len(meeting_history) > 0:
+            avg_meeting_score = sum(m.get("score", 0) for m in meeting_history[-3:]) / min(len(meeting_history), 3)
+            if avg_meeting_score >= 80:
+                recent_performance = "excellent"
+            elif avg_meeting_score >= 60:
+                recent_performance = "good"
+            else:
+                recent_performance = "needs_improvement"
+        else:
+            recent_performance = "new_employee"
+        
+        # Check for event
+        event_data = await workflow_orchestrator.check_for_event(
+            session_id=session_id,
+            player_level=session_data.get("level", 1),
+            tasks_completed=tasks_completed,
+            recent_performance=recent_performance,
+            meeting_history=meeting_history
+        )
+        
+        if event_data:
+            logger.info(f"Event triggered for session {session_id}: {event_data.get('event_type')}")
+        
+        return {"event": event_data}
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to check for events: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check for events: {str(e)}"
         )

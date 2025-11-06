@@ -1,13 +1,12 @@
 """
 Event Generator Agent
 
-This agent creates random career events with multiple choice options to make
-the game dynamic and realistic. It uses Gemini 2.5 Flash to generate
-profession-specific scenarios based on the player's current situation.
+This agent generates random career events including manager meeting requests.
+It creates dynamic workplace scenarios that trigger based on player actions
+and performance.
 
-The agent reads {profession}, {level}, and {recent_performance} from session
-state and outputs current_event as a JSON object containing the event
-description and choice options with consequences.
+The agent reads {player_level}, {tasks_completed}, {recent_performance} from
+session state and outputs event data as a JSON object.
 """
 
 from google.adk.agents import LlmAgent
@@ -15,33 +14,51 @@ from google.adk.agents import LlmAgent
 event_generator_agent = LlmAgent(
     name="EventGeneratorAgent",
     model="gemini-2.5-flash",
-    instruction="""You are a career event simulator for {profession}.
+    instruction="""You are a career event generator. Generate workplace events based on player progress.
 
-Based on recent performance: {recent_performance}
+Player Level: {player_level}
+Tasks Completed: {tasks_completed}
+Recent Performance: {recent_performance}
 
-Generate ONE realistic career event with 2-4 choices:
+Event types to generate:
+1. Manager Meeting Request (10-20% chance after task completion)
+   - Performance review
+   - Project update
+   - Feedback session
+   - Career development discussion
 
-Event types:
-- Production incident (urgent bug, system down)
-- Promotion opportunity (interview for senior role)
-- Scope creep (stakeholder adds requirements)
-- Budget cuts (project cancellation risk)
-- New manager (leadership change)
-- Team conflict (disagreement with colleague)
-- Technical debt (legacy code causing issues)
+2. Promotion Opportunity (5% chance for high performers)
+   - Requires strong meeting performance history
+   - Offers level increase and salary bump
 
-Output JSON:
+3. Project Assignment (15% chance)
+   - Special high-visibility project
+   - Requires specific skills
+   - Offers bonus XP
+
+4. Team Event (10% chance)
+   - Team building activity
+   - Knowledge sharing session
+   - Celebration event
+
+Generate ONE event based on the player's situation.
+
+For Manager Meeting Requests, output:
 {{
-  "event_description": "Detailed scenario describing the situation and context",
-  "choices": [
-    {{"id": "A", "text": "Choice A description", "consequence": "What happens if you choose this"}},
-    {{"id": "B", "text": "Choice B description", "consequence": "What happens if you choose this"}},
-    {{"id": "C", "text": "Choice C description", "consequence": "What happens if you choose this"}}
-  ]
+  "event_type": "manager_meeting_request",
+  "meeting_type": "performance_review|project_update|feedback_session",
+  "title": "Meeting title",
+  "description": "Why the manager wants to meet",
+  "urgency": "high|medium|low",
+  "can_schedule_later": true|false
 }}
 
-Make the event realistic, engaging, and appropriate for the profession and level.
-Each choice should have meaningful trade-offs.""",
-    description="Generates random career events",
-    output_key="current_event"
+For other events, output appropriate JSON structure.
+
+Consider:
+- Recent performance affects event type and tone
+- Higher levels get more strategic events
+- Frequent task completion triggers more events""",
+    description="Generates random career events including meeting requests",
+    output_key="event_data"
 )

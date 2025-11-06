@@ -23,7 +23,7 @@ export interface PlayerProfile {
   skills: string[];
 }
 
-export type GameStage = 'selecting_profession' | 'interview' | 'working' | 'event' | 'game_over';
+export type GameStage = 'selecting_profession' | 'graduated' | 'interview' | 'working' | 'event' | 'game_over';
 
 export interface Task {
   id: string;
@@ -50,6 +50,26 @@ export interface GameState {
   error: string | null;
 }
 
+export type JobLevel = 'entry' | 'mid' | 'senior';
+export type JobType = 'remote' | 'hybrid' | 'onsite';
+
+export interface JobListing {
+  id: string;
+  companyName: string;
+  companyLogo?: string;
+  position: string;
+  location: string;
+  jobType: JobType;
+  salaryRange?: { min: number; max: number };
+  level: JobLevel;
+  requirements: string[];
+  postedDate: string;
+  description?: string;
+  responsibilities?: string[];
+  benefits?: string[];
+  qualifications?: string[];
+}
+
 export enum AgentType {
   INTERVIEWER = 'INTERVIEWER',
   TASK_GENERATOR = 'TASK_GENERATOR',
@@ -71,4 +91,136 @@ export interface AgentConfig {
   description: string;
   model: 'Gemini 2.5 Pro' | 'Gemini 2.5 Flash' | 'Gemini Flash Lite';
   promptSnippet: string;
+}
+
+export interface InterviewQuestion {
+  id: string;
+  question: string;
+  expectedAnswer?: string;
+}
+
+export interface InterviewResult {
+  passed: boolean;
+  overallScore: number;
+  feedback: Array<{
+    question: string;
+    answer: string;
+    score: number;
+    feedback: string;
+  }>;
+}
+
+export interface PlayerState {
+  sessionId: string;
+  profession: string; // Added: profession ID (e.g., 'ios_engineer')
+  status: 'graduated' | 'job_searching' | 'interviewing' | 'employed';
+  level: number;
+  xp: number;
+  xpToNextLevel: number;
+  currentJob?: {
+    jobId: string;
+    companyName: string;
+    position: string;
+    startDate: string;
+    salary?: number;
+  };
+  stats: {
+    tasksCompleted: number;
+    jobsHeld: number;
+    interviewsPassed: number;
+    interviewsFailed: number;
+  };
+  cv_data?: CVData;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TaskFormatType = 
+  | 'text_answer' 
+  | 'multiple_choice' 
+  | 'fill_in_blank' 
+  | 'matching' 
+  | 'code_review' 
+  | 'prioritization';
+
+export interface MultipleChoiceOption {
+  id: string;
+  text: string;
+}
+
+export interface FillInBlank {
+  id: string;
+  text: string;
+  placeholder: string;
+}
+
+export interface MatchingItem {
+  id: string;
+  text: string;
+}
+
+export interface CodeReviewBug {
+  lineNumber: number;
+  description: string;
+}
+
+export interface PrioritizationItem {
+  id: string;
+  text: string;
+  order?: number;
+}
+
+export interface WorkTask {
+  id: string;
+  title: string;
+  description: string;
+  requirements: string[];
+  acceptanceCriteria: string[];
+  difficulty: number;
+  status: 'pending' | 'in-progress' | 'completed';
+  xpReward: number;
+  dueDate?: string;
+  createdAt: string;
+  imageUrl?: string; // AI-generated task visualization
+  formatType?: TaskFormatType;
+  
+  // Multiple choice specific fields
+  options?: MultipleChoiceOption[];
+  correctAnswer?: string;
+  explanation?: string;
+  
+  // Fill in blank specific fields
+  blanks?: FillInBlank[];
+  blankText?: string; // Text with {blank_id} placeholders
+  expectedAnswers?: Record<string, string>;
+  
+  // Matching specific fields
+  matchingLeft?: MatchingItem[];
+  matchingRight?: MatchingItem[];
+  correctMatches?: Record<string, string>;
+  
+  // Code review specific fields
+  code?: string;
+  bugs?: CodeReviewBug[];
+  
+  // Prioritization specific fields
+  prioritizationItems?: PrioritizationItem[];
+  correctPriority?: string[]; // Array of item IDs in correct order
+}
+
+export interface JobExperience {
+  companyName?: string;
+  company_name?: string;
+  position: string;
+  startDate?: string;
+  start_date?: string;
+  endDate?: string;
+  end_date?: string;
+  accomplishments: string[];
+}
+
+export interface CVData {
+  experience: JobExperience[];
+  skills: string[];
+  accomplishments: string[];
 }
