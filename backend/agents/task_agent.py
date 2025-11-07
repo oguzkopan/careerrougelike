@@ -27,14 +27,24 @@ Generate ONE work task that:
 3. Has clear requirements and acceptance criteria
 4. Awards appropriate XP (10-100 based on difficulty)
 5. Varies in format type to keep gameplay interesting
+6. **CRITICAL**: Is SELF-CONTAINED and SOLVABLE without external documents or attachments
+7. **CRITICAL**: Provides ALL necessary information within the task description itself
+
+IMPORTANT RULES:
+- DO NOT reference "attached documents", "provided files", "see attachment", or similar
+- DO NOT ask to review external P&IDs, diagrams, spreadsheets, or documents
+- If a task needs data, INCLUDE the data directly in the description or requirements
+- If a task needs code, INCLUDE the code snippet directly in the description
+- Make tasks that can be answered with knowledge, reasoning, or creativity
+- Tasks should be answerable based on the information provided in the task itself
 
 Task types by job category:
-- Engineer/Developer: Code debugging, feature implementation, architecture design, code review, testing
-- Analyst: Data analysis, SQL queries, report creation, dashboard building, insights generation
-- Designer: UI/UX design, wireframes, design systems, user research, prototyping
-- Manager: Strategy planning, team coordination, stakeholder management, process improvement
-- Sales/Marketing: Campaign planning, lead generation, customer outreach, market analysis
-- Operations: Process optimization, workflow design, resource allocation, quality assurance
+- Engineer/Developer: Algorithm design, system architecture questions, debugging scenarios (with code provided), best practices, optimization strategies
+- Analyst: Data interpretation (with data provided), SQL query writing, metric calculation, trend analysis
+- Designer: Design critique, UX improvement suggestions, color scheme selection, layout planning
+- Manager: Priority ranking, resource allocation decisions, conflict resolution scenarios, strategy planning
+- Sales/Marketing: Campaign strategy, customer persona creation, messaging development, market positioning
+- Operations: Process improvement ideas, efficiency optimization, workflow design, quality metrics
 
 Difficulty scaling:
 - Level 1-3: Simple, well-defined tasks (difficulty 1-3, XP 10-30)
@@ -86,9 +96,35 @@ For TEXT_ANSWER tasks (default), output:
   "task_type": "designer|engineer|analyst|manager|sales|operations"
 }}
 
+GOOD TASK EXAMPLES (self-contained, solvable):
+
+✅ GOOD - Process Engineer:
+"Design a heat exchanger selection strategy for a new cooling system. The system needs to cool 1000 L/min of water from 80°C to 40°C. Ambient temperature is 25°C. Recommend the type of heat exchanger (shell-and-tube, plate, or air-cooled) and justify your choice based on efficiency, cost, and maintenance considerations."
+
+✅ GOOD - Software Engineer:
+"Review this Python function and identify potential issues:
+```python
+def calculate_average(numbers):
+    total = 0
+    for num in numbers:
+        total += num
+    return total / len(numbers)
+```
+Identify at least 2 potential bugs or edge cases and suggest improvements."
+
+✅ GOOD - Data Analyst:
+"Analyze this sales data: Q1: $120K, Q2: $95K, Q3: $150K, Q4: $180K. Calculate the year-over-year growth rate, identify the trend, and provide 2-3 recommendations for Q1 of next year."
+
+❌ BAD - References external documents:
+"Review the attached P&ID diagram and identify discrepancies with the equipment list."
+
+❌ BAD - Requires unavailable files:
+"Analyze the provided Excel spreadsheet and create a summary report."
+
 Make the task realistic, specific, and appropriate for the job and level.
 Vary format_type to create diverse gameplay experiences.
-Set task_type based on the job category to enable appropriate visualizations.""",
+Set task_type based on the job category to enable appropriate visualizations.
+ALWAYS ensure tasks are self-contained and solvable with the information provided.""",
     description="Generates work tasks appropriate to the player's job",
     output_key="new_task"
 )

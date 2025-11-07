@@ -425,6 +425,60 @@ async def get_session(
         )
 
 
+@app.delete("/sessions/{session_id}", status_code=status.HTTP_200_OK)
+async def delete_session(
+    session_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Delete a session and all associated data (jobs, tasks, CV, meetings)
+    
+    Args:
+        session_id: Unique session identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Success message
+        
+    Raises:
+        HTTPException: If session not found or access denied
+    """
+    try:
+        # Get session to verify ownership
+        session_data = firestore_manager.get_session(session_id)
+        
+        # Verify user owns this session (if authenticated)
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Delete session and all associated data
+        firestore_manager.delete_session(session_id)
+        
+        logger.info(f"Deleted session {session_id} and all associated data")
+        
+        return {
+            "success": True,
+            "message": f"Session {session_id} deleted successfully"
+        }
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete session: {str(e)}"
+        )
+
+
 @app.get("/sessions/{session_id}/state")
 async def get_player_state(
     session_id: str,
@@ -952,6 +1006,25 @@ async def accept_job_offer(
                 detail="You do not have access to this session"
             )
         
+        # Check if job already accepted (idempotency check)
+        current_job = session_data.get("current_job")
+        if current_job and current_job.get("job_id") == job_id:
+            logger.info(f"Job {job_id} already accepted for session {session_id}, returning existing state")
+            
+            # Return existing state with tasks
+            tasks = firestore_manager.get_active_tasks(session_id)
+            
+            return {
+                "success": True,
+                "message": "Job already accepted",
+                "player_state": {
+                    "status": session_data.get("status", "employed"),
+                    "current_job": current_job,
+                    "cv_data": session_data.get("cv_data", {"experience": [], "skills": []})
+                },
+                "tasks": tasks
+            }
+        
         # Retrieve job details
         job_data = firestore_manager.get_job(job_id)
         
@@ -1365,10 +1438,48 @@ async def submit_interview_voice_answer(
             )
         
         logger.info(f"Processing voice answer for question {question_id} in session {session_id}")
+        logger.info(f"Audio content type: {audio.content_type}, filename: {audio.filename}")
         
-        # Save audio file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
-            content = await audio.read()
+        # Validate audio format
+        valid_audio_types = ['audio/webm', 'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg']
+        content_type = audio.content_type or ''
+        
+        # Extract base content type (remove codec info)
+        base_content_type = content_type.split(';')[0].strip()
+        
+        if base_content_type not in valid_audio_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported audio format: {content_type}. Supported formats: WebM, MP3, WAV, OGG"
+            )
+        
+        # Determine file extension based on content type
+        extension_map = {
+            'audio/webm': '.webm',
+            'audio/mp3': '.mp3',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'audio/ogg': '.ogg'
+        }
+        file_extension = extension_map.get(base_content_type, '.webm')
+        
+        # Validate file size (max 10MB)
+        content = await audio.read()
+        max_size = 10 * 1024 * 1024  # 10MB
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Audio file too large. Maximum size is 10MB"
+            )
+        
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Audio file is empty"
+            )
+        
+        # Save audio file temporarily with correct extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
             temp_file.write(content)
             temp_audio_path = temp_file.name
         
@@ -1378,7 +1489,8 @@ async def submit_interview_voice_answer(
                 session_id=session_id,
                 question=question_data.get("question", ""),
                 expected_answer=question_data.get("expected_answer", ""),
-                audio_path=temp_audio_path
+                audio_path=temp_audio_path,
+                mime_type=base_content_type
             )
             
             logger.info(f"Voice answer processed: transcription length={len(result.get('transcription', ''))}, score={result.get('score', 0)}")
@@ -1448,10 +1560,48 @@ async def submit_task_voice_solution(
             )
         
         logger.info(f"Processing voice solution for task {task_id} in session {session_id}")
+        logger.info(f"Audio content type: {audio.content_type}, filename: {audio.filename}")
         
-        # Save audio file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
-            content = await audio.read()
+        # Validate audio format
+        valid_audio_types = ['audio/webm', 'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg']
+        content_type = audio.content_type or ''
+        
+        # Extract base content type (remove codec info)
+        base_content_type = content_type.split(';')[0].strip()
+        
+        if base_content_type not in valid_audio_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported audio format: {content_type}. Supported formats: WebM, MP3, WAV, OGG"
+            )
+        
+        # Determine file extension based on content type
+        extension_map = {
+            'audio/webm': '.webm',
+            'audio/mp3': '.mp3',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'audio/ogg': '.ogg'
+        }
+        file_extension = extension_map.get(base_content_type, '.webm')
+        
+        # Validate file size (max 10MB)
+        content = await audio.read()
+        max_size = 10 * 1024 * 1024  # 10MB
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Audio file too large. Maximum size is 10MB"
+            )
+        
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Audio file is empty"
+            )
+        
+        # Save audio file temporarily with correct extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
             temp_file.write(content)
             temp_audio_path = temp_file.name
         
@@ -1462,7 +1612,8 @@ async def submit_task_voice_solution(
                 task=task_data,
                 audio_path=temp_audio_path,
                 player_level=session_data.get("level", 1),
-                current_xp=session_data.get("xp", 0)
+                current_xp=session_data.get("xp", 0),
+                mime_type=base_content_type
             )
             
             # Update task status

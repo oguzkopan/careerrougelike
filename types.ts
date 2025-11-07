@@ -102,6 +102,7 @@ export interface InterviewQuestion {
 export interface InterviewResult {
   passed: boolean;
   overallScore: number;
+  overall_score?: number; // Backend returns snake_case
   feedback: Array<{
     question: string;
     answer: string;

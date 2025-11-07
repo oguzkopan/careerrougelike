@@ -3,6 +3,7 @@ import { RefreshCw, Briefcase, Filter, ArrowUpDown } from 'lucide-react';
 import { JobListing, JobLevel, JobType } from '../types';
 import JobCard from './JobCard';
 import Button from './shared/Button';
+import ResetButton from './shared/ResetButton';
 import AgentFallback from './AgentFallback';
 import { SessionExpiredError, AgentError } from '../services/backendApiService';
 
@@ -15,6 +16,7 @@ interface JobListingsViewProps {
   isEmployed?: boolean;
   error?: Error | null;
   onRetry?: () => void;
+  onReset?: () => void;
 }
 
 // Skeleton card for loading state
@@ -54,6 +56,7 @@ const JobListingsView: React.FC<JobListingsViewProps> = ({
   isEmployed = false,
   error = null,
   onRetry,
+  onReset,
 }) => {
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<{
@@ -107,14 +110,17 @@ const JobListingsView: React.FC<JobListingsViewProps> = ({
               {isLoading ? 'Loading opportunities...' : `${sortedListings.length} positions available`}
             </p>
           </div>
-          <Button
-            onClick={onRefresh}
-            disabled={isLoading}
-            className="flex items-center gap-2"
-          >
-            <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-            Refresh Listings
-          </Button>
+          <div className="flex gap-3">
+            <Button
+              onClick={onRefresh}
+              disabled={isLoading}
+              className="flex items-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh Listings
+            </Button>
+            {onReset && <ResetButton onReset={onReset} />}
+          </div>
         </div>
 
         {/* Filter and Sort Controls */}

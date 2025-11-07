@@ -58,7 +58,7 @@ const InterviewResultView: React.FC<InterviewResultViewProps> = ({
   }, [result.passed]);
 
   const passed = result.passed;
-  const score = result.overall_score || result.overallScore || 0;
+  const score = result.overallScore || result.overall_score || 0;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white relative overflow-hidden">
@@ -342,10 +342,13 @@ const InterviewResultView: React.FC<InterviewResultViewProps> = ({
                   disabled={isAcceptingOffer}
                 >
                   {isAcceptingOffer ? (
-                    <>
-                      <span className="animate-spin mr-2">⏳</span>
-                      Accepting...
-                    </>
+                    <div className="flex flex-col items-center gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="animate-spin">⏳</span>
+                        <span>Setting up your new job...</span>
+                      </div>
+                      <span className="text-xs text-gray-400">This may take a moment</span>
+                    </div>
                   ) : (
                     <>
                       <CheckCircle2 className="w-5 h-5 mr-2" />

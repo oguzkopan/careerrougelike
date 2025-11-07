@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Briefcase, Building2, CheckCircle2, Loader2, Mic } from 'lucide-react';
+import { Briefcase, Building2, CheckCircle2, Loader2, Mic, ArrowLeft } from 'lucide-react';
 import { InterviewQuestion } from '../types';
 import Button from './shared/Button';
+import ResetButton from './shared/ResetButton';
 import VoiceRecorder from './shared/VoiceRecorder';
 import { useToast } from './shared/Toast';
 
@@ -12,6 +13,8 @@ interface InterviewViewProps {
   onSubmitAnswers: (answers: Record<string, string>) => void;
   isSubmitting: boolean;
   sessionId?: string; // Optional: for voice submissions
+  onBack?: () => void;
+  onReset?: () => void;
 }
 
 const InterviewView: React.FC<InterviewViewProps> = ({
@@ -21,6 +24,8 @@ const InterviewView: React.FC<InterviewViewProps> = ({
   onSubmitAnswers,
   isSubmitting,
   sessionId,
+  onBack,
+  onReset,
 }) => {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -87,43 +92,124 @@ const InterviewView: React.FC<InterviewViewProps> = ({
         // Import the voice submission function
         const { submitInterviewVoiceAnswer } = await import('../services/backendApiService');
         
-        // Process each voice answer sequentially
+        // Validate all audio formats before submission
         for (const [questionId, voiceData] of Object.entries(voiceAnswers)) {
+          const blob = voiceData.blob;
+          
+          // Validate audio format - check MIME type
+          if (!blob.type || !blob.type.startsWith('audio/')) {
+            const questionIndex = questions.findIndex(q => q.id === questionId);
+            showToast(
+              `Question ${questionIndex + 1}: Invalid audio format detected. Please re-record your answer.`,
+              'error'
+            );
+            return;
+          }
+          
+          // Validate file size (max 10MB)
+          const maxSize = 10 * 1024 * 1024; // 10MB
+          if (blob.size > maxSize) {
+            const questionIndex = questions.findIndex(q => q.id === questionId);
+            showToast(
+              `Question ${questionIndex + 1}: Audio file too large (${(blob.size / 1024 / 1024).toFixed(1)}MB). Please keep recordings under 10MB.`,
+              'error'
+            );
+            return;
+          }
+          
+          // Validate file is not empty
+          if (blob.size === 0) {
+            const questionIndex = questions.findIndex(q => q.id === questionId);
+            showToast(
+              `Question ${questionIndex + 1}: Audio recording is empty. Please record your answer again.`,
+              'error'
+            );
+            return;
+          }
+        }
+        
+        // Process all voice answers in parallel using Promise.all
+        const voiceEntries = Object.entries(voiceAnswers);
+        const transcriptionPromises = voiceEntries.map(async ([questionId, voiceData]) => {
           const questionIndex = questions.findIndex(q => q.id === questionId);
           const questionNum = questionIndex + 1;
           
           try {
-            showToast(`Transcribing voice answer ${questionNum}/${questions.length}...`, 'info');
+            // Ensure blob has correct MIME type - create new blob with explicit type
+            const blob = voiceData.blob;
+            const mimeType = blob.type || 'audio/webm';
+            const properBlob = new Blob([blob], { type: mimeType });
             
             const result = await submitInterviewVoiceAnswer(
               sessionId,
               questionId,
-              voiceData.blob
+              properBlob
             );
             
-            // Replace the placeholder with the actual transcription
-            // The voice endpoint returns transcription even though it also grades
-            if (result.transcription && result.transcription.trim()) {
-              processedAnswers[questionId] = result.transcription;
+            // Validate transcription result
+            if (result.transcription && result.transcription.trim().length > 0) {
+              return { 
+                questionId, 
+                transcription: result.transcription, 
+                success: true, 
+                questionNum 
+              };
             } else {
               // Fallback if transcription is empty
-              processedAnswers[questionId] = '[Voice answer could not be transcribed]';
-              allVoiceProcessed = false;
+              return { 
+                questionId, 
+                transcription: '[Voice answer could not be transcribed - please type your answer]', 
+                success: false, 
+                questionNum,
+                error: 'Empty transcription received'
+              };
             }
             
-          } catch (error) {
-            console.error(`Failed to process voice answer for ${questionId}:`, error);
-            showToast(`Failed to transcribe voice answer ${questionNum}`, 'error');
-            // Use a fallback text if transcription fails
-            processedAnswers[questionId] = '[Voice answer - transcription failed]';
-            allVoiceProcessed = false;
+          } catch (error: any) {
+            console.error(`Failed to process voice answer for question ${questionNum}:`, error);
+            
+            // Provide user-friendly error messages based on error type
+            let errorMessage = 'Transcription failed';
+            if (error.message?.includes('format') || error.message?.includes('audio')) {
+              errorMessage = 'Audio format not supported';
+            } else if (error.message?.includes('timeout') || error.message?.includes('timed out')) {
+              errorMessage = 'Transcription timed out - please try again';
+            } else if (error.message?.includes('network') || error.message?.includes('connection')) {
+              errorMessage = 'Network error - check your connection';
+            } else if (error.message?.includes('size') || error.message?.includes('large')) {
+              errorMessage = 'Audio file too large';
+            }
+            
+            return { 
+              questionId, 
+              transcription: `[Voice answer - ${errorMessage}]`, 
+              success: false, 
+              questionNum,
+              error: errorMessage
+            };
           }
-        }
+        });
         
+        // Show progress indicator with count
+        showToast(`Transcribing ${voiceEntries.length} voice answer(s) in parallel...`, 'info');
+        
+        // Wait for all transcriptions to complete in parallel
+        const results = await Promise.all(transcriptionPromises);
+        
+        // Process results and update answers
+        results.forEach(result => {
+          processedAnswers[result.questionId] = result.transcription;
+          if (!result.success) {
+            allVoiceProcessed = false;
+            showToast(`Question ${result.questionNum}: ${result.error}`, 'warning');
+          }
+        });
+        
+        // Show appropriate success/warning message
         if (allVoiceProcessed) {
           showToast('All voice answers transcribed successfully!', 'success');
         } else {
-          showToast('Some voice answers could not be transcribed', 'warning');
+          showToast('Some voice answers could not be transcribed. Please review before submitting.', 'warning');
         }
         
         // Small delay to show the success message
@@ -131,8 +217,17 @@ const InterviewView: React.FC<InterviewViewProps> = ({
         
         showToast('Submitting interview...', 'info');
         onSubmitAnswers(processedAnswers);
-      } catch (error) {
-        showToast('Failed to process voice answers', 'error');
+      } catch (error: any) {
+        // Handle unexpected errors with specific messages
+        let errorMsg = 'Failed to process voice answers. Please try again.';
+        
+        if (error.message?.includes('network') || error.message?.includes('connection')) {
+          errorMsg = 'Network connection failed. Please check your internet and try again.';
+        } else if (error.message?.includes('session')) {
+          errorMsg = 'Session expired. Please refresh the page and try again.';
+        }
+        
+        showToast(errorMsg, 'error');
         console.error('Voice processing error:', error);
       }
     } else {
@@ -148,7 +243,21 @@ const InterviewView: React.FC<InterviewViewProps> = ({
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
       {/* Header */}
       <div className="bg-gradient-to-b from-indigo-500/20 to-transparent border-b border-gray-700/50">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative">
+          {/* Back and Reset Buttons */}
+          <div className="absolute top-4 right-4 flex gap-2">
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-400 hover:text-white bg-gray-800/50 hover:bg-gray-700/50 border border-gray-700 hover:border-gray-600 rounded-lg transition-colors"
+                disabled={isSubmitting}
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back</span>
+              </button>
+            )}
+            {onReset && <ResetButton onReset={onReset} />}
+          </div>
           <div className="flex items-center gap-4 mb-6">
             <div className="w-16 h-16 bg-indigo-500/20 rounded-xl flex items-center justify-center border border-indigo-500/50">
               <Building2 className="w-8 h-8 text-indigo-400" />

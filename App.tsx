@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useQueryClient } from '@tanstack/react-query';
 import ProfessionSelector from './components/ProfessionSelector';
 import GameScreen from './components/GameScreen';
 import AgentDashboard from './components/AgentDashboard';
@@ -57,7 +58,8 @@ const pageTransition = {
 const JobListingsViewWrapper: React.FC<{
   sessionId: string | null;
   onSelectJob: (jobId: string) => void;
-}> = ({ sessionId, onSelectJob }) => {
+  onReset?: () => void;
+}> = ({ sessionId, onSelectJob, onReset }) => {
   const { listings, isLoading, refresh, isRefreshing, error, refetch } = apiService.useJobListings(sessionId, 1);
   
   return (
@@ -68,6 +70,7 @@ const JobListingsViewWrapper: React.FC<{
       isLoading={isLoading || isRefreshing}
       error={error as Error}
       onRetry={refetch}
+      onReset={onReset}
     />
   );
 };
@@ -119,7 +122,8 @@ const InterviewViewWrapper: React.FC<{
   jobId: string | null;
   onInterviewComplete: (result: InterviewResult) => void;
   onBack: () => void;
-}> = ({ sessionId, jobId, onInterviewComplete, onBack }) => {
+  onReset?: () => void;
+}> = ({ sessionId, jobId, onInterviewComplete, onBack, onReset }) => {
   const { 
     questions, 
     isLoadingQuestions, 
@@ -190,6 +194,8 @@ const InterviewViewWrapper: React.FC<{
       onSubmitAnswers={handleSubmitAnswers}
       isSubmitting={isSubmitting}
       sessionId={sessionId}
+      onBack={onBack}
+      onReset={onReset}
     />
   );
 };
@@ -203,7 +209,10 @@ const InterviewResultViewWrapper: React.FC<{
   onBackToListings: () => void;
 }> = ({ result, sessionId, jobId, onAcceptOffer, onDeclineOffer, onBackToListings }) => {
   const [job, setJob] = React.useState<JobListing | null>(null);
-  const { acceptOffer, isAcceptingOffer } = apiService.useInterview(sessionId, jobId);
+  const [isAccepting, setIsAccepting] = React.useState(false);
+  const { acceptOfferAsync, isAcceptingOffer } = apiService.useInterview(sessionId, jobId);
+  const queryClient = useQueryClient();
+  const { showToast } = useToast();
 
   React.useEffect(() => {
     const fetchJob = async () => {
@@ -219,11 +228,84 @@ const InterviewResultViewWrapper: React.FC<{
   }, [sessionId, jobId]);
 
   const handleAcceptOffer = async () => {
+    // Prevent duplicate calls
+    if (isAccepting || isAcceptingOffer) return;
+    
+    setIsAccepting(true);
     try {
-      await acceptOffer();
+      console.log('[Accept Offer] Starting job acceptance...');
+      console.log('[Accept Offer] Session ID:', sessionId);
+      console.log('[Accept Offer] Job ID:', jobId);
+      
+      // Accept the offer via API (this waits for backend to complete)
+      await acceptOfferAsync();
+      console.log('[Accept Offer] Backend accepted offer successfully');
+      
+      // Invalidate queries immediately to force refetch
+      console.log('[Accept Offer] Invalidating queries...');
+      await queryClient.invalidateQueries({ queryKey: ['playerState', sessionId] });
+      await queryClient.invalidateQueries({ queryKey: ['tasks', sessionId] });
+      
+      // Poll for state to be ready (with timeout)
+      const pollInterval = 1000; // Check every second
+      const maxWaitTime = 20000; // Wait up to 20 seconds
+      const startTime = Date.now();
+      
+      let playerStateReady = false;
+      let tasksReady = false;
+      let pollAttempts = 0;
+      
+      while (Date.now() - startTime < maxWaitTime && (!playerStateReady || !tasksReady)) {
+        pollAttempts++;
+        try {
+          const [playerState, tasks] = await Promise.all([
+            apiService.getPlayerState(sessionId!),
+            apiService.getTasks(sessionId!)
+          ]);
+          
+          playerStateReady = !!playerState.currentJob;
+          tasksReady = tasks.length > 0;
+          
+          console.log(`[Accept Offer] Poll attempt ${pollAttempts}:`, {
+            hasJob: playerStateReady,
+            tasksCount: tasks.length,
+            status: playerState.status,
+            jobData: playerState.currentJob
+          });
+          
+          if (playerStateReady && tasksReady) {
+            console.log('[Accept Offer] State is ready! Navigating...');
+            break;
+          }
+          
+          // Wait before next poll
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+        } catch (error) {
+          console.error(`[Accept Offer] Poll attempt ${pollAttempts} failed:`, error);
+          // Continue polling even on error
+          await new Promise(resolve => setTimeout(resolve, pollInterval));
+        }
+      }
+      
+      if (!playerStateReady || !tasksReady) {
+        console.warn('[Accept Offer] State not ready after polling:', {
+          playerStateReady,
+          tasksReady,
+          pollAttempts,
+          timeElapsed: Date.now() - startTime
+        });
+        // Still navigate - the WorkDashboard will show a loading state
+      }
+      
+      // Navigate to work dashboard
+      console.log('[Accept Offer] Navigating to work dashboard...');
       onAcceptOffer();
     } catch (error) {
-      console.error('Failed to accept offer:', error);
+      console.error('[Accept Offer] FAILED to accept offer:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to accept job offer';
+      showToast(errorMessage, 'error');
+      setIsAccepting(false);
+      // Don't navigate on error
     }
   };
 
@@ -249,7 +331,7 @@ const InterviewResultViewWrapper: React.FC<{
       onAcceptOffer={handleAcceptOffer}
       onDeclineOffer={onDeclineOffer}
       onBackToListings={onBackToListings}
-      isAcceptingOffer={isAcceptingOffer}
+      isAcceptingOffer={isAccepting || isAcceptingOffer}
     />
   );
 };
@@ -408,35 +490,18 @@ const App: React.FC = () => {
     }));
   }, []);
 
-  const handleAcceptOffer = useCallback(async () => {
-    if (!appState.sessionId || !appState.selectedJobId) return;
-    
-    setAppState(prev => ({ ...prev, isLoading: true, error: null }));
-    try {
-      await apiService.acceptJobOffer(appState.sessionId, appState.selectedJobId);
-      
-      // Small delay to ensure backend updates and queries refetch
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      setAppState(prev => ({
-        ...prev,
-        currentState: 'working',
-        selectedJobId: null,
-        interviewResult: null,
-        isLoading: false,
-      }));
-      showToast('Congratulations! You\'ve accepted the job offer!', 'success');
-    } catch (err) {
-      console.error('Failed to accept offer:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to accept job offer.';
-      showToast(errorMessage, 'error');
-      setAppState(prev => ({ 
-        ...prev, 
-        isLoading: false, 
-        error: errorMessage 
-      }));
-    }
-  }, [appState.sessionId, appState.selectedJobId, showToast]);
+  const handleAcceptOffer = useCallback(() => {
+    // Navigation happens after InterviewResultViewWrapper completes the API call
+    // This ensures backend has updated player state and generated tasks
+    setAppState(prev => ({
+      ...prev,
+      currentState: 'working',
+      selectedJobId: null,
+      interviewResult: null,
+      isLoading: false,
+    }));
+    showToast('Welcome to your new job! Check out your tasks below.', 'success');
+  }, [showToast]);
 
   const handleDeclineOffer = useCallback(() => {
     setAppState(prev => ({
@@ -469,6 +534,29 @@ const App: React.FC = () => {
       interviewResult: null,
     }));
   }, []);
+
+  const handleReset = useCallback(() => {
+    // Clear localStorage immediately
+    localStorage.removeItem(STORAGE_KEY);
+    
+    // Reset app state to initial selecting_profession state
+    setAppState({
+      currentState: 'selecting_profession',
+      sessionId: null,
+      profession: null,
+      selectedJobId: null,
+      interviewResult: null,
+      isLoading: false,
+      error: null,
+    });
+    
+    // Clear React Query cache
+    const queryClient = apiService.useQueryClient();
+    queryClient.clear();
+    
+    // Show success toast
+    showToast('Game reset. Starting fresh!', 'success');
+  }, [showToast]);
 
   // Legacy handlers for backward compatibility
   const handleSubmitAnswer = useCallback(async (answer: string) => {
@@ -562,6 +650,7 @@ const App: React.FC = () => {
         >
           <GraduationScreen 
             onStartJobSearch={handleStartJobSearch}
+            onReset={handleReset}
             profession={appState.profession || undefined}
           />
         </motion.div>
@@ -579,6 +668,7 @@ const App: React.FC = () => {
           <JobListingsViewWrapper
             sessionId={appState.sessionId}
             onSelectJob={handleSelectJob}
+            onReset={handleReset}
           />
         </motion.div>
       )}
@@ -615,6 +705,7 @@ const App: React.FC = () => {
             jobId={appState.selectedJobId}
             onInterviewComplete={handleInterviewComplete}
             onBack={handleBackToListings}
+            onReset={handleReset}
           />
         </motion.div>
       )}
@@ -652,6 +743,7 @@ const App: React.FC = () => {
             sessionId={appState.sessionId!}
             onJobSearch={handleJobSearchFromDashboard}
             onViewCV={handleViewCV}
+            onReset={handleReset}
           />
         </motion.div>
       )}

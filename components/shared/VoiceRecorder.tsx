@@ -28,11 +28,13 @@ const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     audio: true,
     video: false,
     blobPropertyBag: {
-      type: 'audio/webm',
+      type: 'audio/webm;codecs=opus',
     },
     onStop: (blobUrl, blob) => {
+      // Ensure blob has correct MIME type
+      const properBlob = new Blob([blob], { type: 'audio/webm;codecs=opus' });
       setRecordedAudioUrl(blobUrl);
-      setRecordedBlob(blob);
+      setRecordedBlob(properBlob);
     },
   });
 

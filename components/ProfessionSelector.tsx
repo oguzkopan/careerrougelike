@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { Profession } from '../types';
-import { Briefcase, BarChart2, PenTool, TrendingUp, Zap, Cpu } from 'lucide-react';
+import { 
+  Briefcase, BarChart2, PenTool, TrendingUp, Zap, Cpu, 
+  Code, Server, Settings, Megaphone, ClipboardList, 
+  Brain, Shield, FileText 
+} from 'lucide-react';
 import LoadingSpinner from './shared/LoadingSpinner';
 import Button from './shared/Button';
 
@@ -16,6 +20,14 @@ const iconMap: { [key: string]: React.ReactNode } = {
   data_analyst: <BarChart2 className="w-8 h-8 text-indigo-400" />,
   product_designer: <PenTool className="w-8 h-8 text-indigo-400" />,
   sales_associate: <TrendingUp className="w-8 h-8 text-indigo-400" />,
+  frontend_developer: <Code className="w-8 h-8 text-indigo-400" />,
+  backend_engineer: <Server className="w-8 h-8 text-indigo-400" />,
+  devops_engineer: <Settings className="w-8 h-8 text-indigo-400" />,
+  marketing_manager: <Megaphone className="w-8 h-8 text-indigo-400" />,
+  project_manager: <ClipboardList className="w-8 h-8 text-indigo-400" />,
+  data_scientist: <Brain className="w-8 h-8 text-indigo-400" />,
+  cybersecurity_analyst: <Shield className="w-8 h-8 text-indigo-400" />,
+  content_writer: <FileText className="w-8 h-8 text-indigo-400" />,
 };
 
 const difficultyColorMap = {

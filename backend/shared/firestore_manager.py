@@ -120,7 +120,8 @@ class FirestoreManager:
     
     def delete_session(self, session_id: str) -> None:
         """
-        Delete a session document from Firestore.
+        Delete a session document and all associated data from Firestore.
+        This includes jobs, tasks, meetings, and CV data.
         
         Args:
             session_id: Unique identifier for the session
@@ -130,13 +131,44 @@ class FirestoreManager:
             Exception: If deletion fails for other reasons
         """
         try:
+            # Check if session exists
             doc_ref = self.db.collection(self.collection_name).document(session_id)
             doc = doc_ref.get()
             
             if not doc.exists:
                 raise ValueError(f"Session {session_id} not found")
             
+            # Delete associated jobs
+            jobs_query = self.db.collection(self.jobs_collection).where(
+                filter=FieldFilter("session_id", "==", session_id)
+            )
+            jobs_docs = jobs_query.stream()
+            for job_doc in jobs_docs:
+                job_doc.reference.delete()
+                logger.info(f"Deleted job {job_doc.id} for session {session_id}")
+            
+            # Delete associated tasks
+            tasks_query = self.db.collection(self.tasks_collection).where(
+                filter=FieldFilter("session_id", "==", session_id)
+            )
+            tasks_docs = tasks_query.stream()
+            for task_doc in tasks_docs:
+                task_doc.reference.delete()
+                logger.info(f"Deleted task {task_doc.id} for session {session_id}")
+            
+            # Delete associated meetings
+            meetings_query = self.db.collection('meetings').where(
+                filter=FieldFilter("session_id", "==", session_id)
+            )
+            meetings_docs = meetings_query.stream()
+            for meeting_doc in meetings_docs:
+                meeting_doc.reference.delete()
+                logger.info(f"Deleted meeting {meeting_doc.id} for session {session_id}")
+            
+            # Finally, delete the session document
             doc_ref.delete()
+            logger.info(f"Deleted session {session_id} and all associated data")
+            
         except ValueError:
             raise
         except Exception as e:

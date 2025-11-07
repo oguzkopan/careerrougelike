@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { GraduationCap, Sparkles, Award } from 'lucide-react';
 import Button from './shared/Button';
+import ResetButton from './shared/ResetButton';
 
 interface GraduationScreenProps {
   onStartJobSearch: () => void;
+  onReset?: () => void;
   playerName?: string;
   profession?: string; // profession ID (e.g., 'ios_engineer')
 }
@@ -14,14 +16,38 @@ const PROFESSION_DEGREES: Record<string, string> = {
   'data_analyst': 'Data Analytics',
   'product_designer': 'Product Design',
   'sales_associate': 'Business and Sales',
+  'frontend_developer': 'Frontend Development',
+  'backend_engineer': 'Backend Engineering',
+  'devops_engineer': 'DevOps Engineering',
+  'marketing_manager': 'Marketing Management',
+  'project_manager': 'Project Management',
+  'data_scientist': 'Data Science',
+  'cybersecurity_analyst': 'Cybersecurity',
+  'content_writer': 'Content Writing',
+};
+
+// Convert profession ID to readable degree name
+const getProfessionDegree = (professionId: string): string => {
+  // Check if it's in our predefined map
+  if (PROFESSION_DEGREES[professionId]) {
+    return PROFESSION_DEGREES[professionId];
+  }
+  
+  // For custom professions, convert the ID to a readable name
+  // e.g., 'chemical_engineer' -> 'Chemical Engineering'
+  return professionId
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 };
 
 const GraduationScreen: React.FC<GraduationScreenProps> = ({ 
   onStartJobSearch,
+  onReset,
   playerName = 'Graduate',
   profession = 'ios_engineer'
 }) => {
-  const degree = PROFESSION_DEGREES[profession] || 'Computer Science';
+  const degree = getProfessionDegree(profession);
   const [showContent, setShowContent] = useState(false);
   const [confetti, setConfetti] = useState<Array<{ id: number; left: number; delay: number; duration: number }>>([]);
 
@@ -43,6 +69,13 @@ const GraduationScreen: React.FC<GraduationScreenProps> = ({
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-indigo-900/20 to-gray-900 text-white flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8 relative overflow-hidden">
+      {/* Reset Button */}
+      {onReset && (
+        <div className="absolute top-4 right-4 z-20">
+          <ResetButton onReset={onReset} />
+        </div>
+      )}
+      
       {/* Confetti Animation */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         {confetti.map((particle) => (

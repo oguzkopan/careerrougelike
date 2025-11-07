@@ -78,13 +78,16 @@ const TaskTicket: React.FC<TaskTicketProps> = ({ task, onSelect }) => {
 
   // Render difficulty stars
   const renderDifficultyStars = () => {
+    const difficultyLabels = ['Very Easy', 'Easy', 'Medium', 'Hard', 'Very Hard'];
+    const difficultyLevel = task.difficulty || 2; // Default to medium if not set
+    
     return (
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1" title={`Difficulty: ${difficultyLabels[difficultyLevel - 1] || 'Medium'}`}>
         {Array.from({ length: 5 }).map((_, i) => (
           <Star
             key={i}
             className={`w-4 h-4 ${
-              i < task.difficulty ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'
+              i < difficultyLevel ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600'
             }`}
           />
         ))}
@@ -116,11 +119,12 @@ const TaskTicket: React.FC<TaskTicketProps> = ({ task, onSelect }) => {
 
       {/* Footer with difficulty and XP */}
       <div className="flex justify-between items-center pt-3 border-t border-gray-700">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-gray-500">Difficulty</span>
           {renderDifficultyStars()}
         </div>
         <div className="flex items-center gap-1 text-sm font-semibold text-green-400">
-          <span>+{task.xpReward} XP</span>
+          <span>+{task.xpReward || 100} XP</span>
         </div>
       </div>
 

@@ -42,65 +42,176 @@ class WorkflowOrchestrator:
         count: int = 10,
         profession: str = "ios_engineer"
     ) -> List[Dict[str, Any]]:
-        """Generate profession-specific job listings."""
+        """
+        Generate profession-specific job listings using AI.
+        Fully dynamic - no hardcoded profession maps.
+        """
         logger.info(f"Generating {count} jobs for session {session_id}, profession {profession}, level {player_level}")
         
-        level_desc = "entry-level" if player_level <= 3 else ("mid-level" if player_level <= 7 else "senior")
+        # Convert profession ID to readable title
+        profession_title = profession.replace('_', ' ').title()
         
-        # Map profession to job types and skills
-        profession_map = {
-            "ios_engineer": {
-                "title": "iOS Engineer",
-                "skills": ["Swift", "SwiftUI", "UIKit", "iOS SDK", "Xcode", "Core Data"],
-                "positions": ["iOS Developer", "iOS Engineer", "Mobile Engineer (iOS)", "Swift Developer"]
-            },
-            "data_analyst": {
-                "title": "Data Analyst",
-                "skills": ["SQL", "Python", "Tableau", "Excel", "Data Visualization", "Statistics"],
-                "positions": ["Data Analyst", "Business Analyst", "Data Scientist", "Analytics Engineer"]
-            },
-            "product_designer": {
-                "title": "Product Designer",
-                "skills": ["Figma", "Sketch", "Adobe XD", "Design Systems", "User Research", "Prototyping"],
-                "positions": ["Product Designer", "UX Designer", "UI/UX Designer", "Design Lead"]
-            },
-            "sales_associate": {
-                "title": "Sales Associate",
-                "skills": ["Salesforce", "CRM", "Cold Calling", "Lead Generation", "Negotiation", "B2B Sales"],
-                "positions": ["Sales Associate", "Account Executive", "Business Development Rep", "Sales Manager"]
-            }
-        }
+        # Determine level and salary based on player level
+        if player_level <= 3:
+            level_desc = "entry-level"
+            salary_min, salary_max = 50000, 90000
+        elif player_level <= 7:
+            level_desc = "mid-level"
+            salary_min, salary_max = 90000, 150000
+        else:
+            level_desc = "senior"
+            salary_min, salary_max = 150000, 250000
         
-        prof_info = profession_map.get(profession, profession_map["ios_engineer"])
-        
-        # Create explicit examples for each position
-        position_examples = []
-        for i, pos in enumerate(prof_info['positions'][:min(count, len(prof_info['positions']))]):
-            salary_min = 50000 if player_level <= 3 else (90000 if player_level <= 7 else 150000)
-            salary_max = 90000 if player_level <= 3 else (150000 if player_level <= 7 else 250000)
-            position_examples.append(f'  {{"company_name": "Company{i+1}", "position": "{pos}", "location": "Remote", "job_type": "remote", "salary_range": {{"min": {salary_min}, "max": {salary_max}}}, "level": "{level_desc}", "requirements": {prof_info["skills"][:3]}, "responsibilities": ["Develop features", "Collaborate", "Review"], "benefits": ["Health", "401k", "PTO"], "description": "Great opportunity"}}')
-        
-        prompt = f"""You are generating job listings for a {prof_info['title']} job search.
+        # AI-driven prompt - let the model figure out everything
+        prompt = f"""You are an expert career advisor and job market analyst. Generate {count} realistic job listings for a {profession_title} professional at {level_desc} level.
 
-STRICT REQUIREMENT: ALL {count} jobs MUST be {prof_info['title']} positions. DO NOT generate jobs for other professions.
+PROFESSION: {profession_title}
+LEVEL: {level_desc} (Player Level {player_level}/10)
+SALARY RANGE: ${salary_min:,} - ${salary_max:,}
 
-Valid position titles (USE THESE EXACTLY):
-{chr(10).join(f"- {pos}" for pos in prof_info['positions'])}
+INSTRUCTIONS:
+1. Research and understand what a {profession_title} does in the real world
+2. Generate {count} diverse, realistic job listings for this profession
+3. Include appropriate:
+   - Job titles (e.g., Junior/Senior {profession_title}, {profession_title} Specialist, Lead {profession_title})
+   - Company names (realistic, varied companies)
+   - Locations (mix of Remote, Hybrid, and specific cities)
+   - Skills and requirements relevant to {profession_title}
+   - Responsibilities typical for this profession
+   - Benefits packages
+   - Detailed job descriptions
 
-Required skills to include:
-{chr(10).join(f"- {skill}" for skill in prof_info['skills'])}
+4. Make each job unique with different:
+   - Company types (startups, enterprises, agencies, etc.)
+   - Focus areas within the profession
+   - Team sizes and structures
+   - Technologies or methodologies used
 
-Generate EXACTLY {count} jobs. Each job MUST:
-1. Have position title from the list above
-2. Include skills from the required skills list
-3. Be relevant to {prof_info['title']} profession
+5. Ensure ALL jobs are strictly for {profession_title} - NO other professions
 
-Output ONLY valid JSON array (no markdown, no explanation):
+OUTPUT FORMAT (JSON array, no markdown):
 [
-{chr(10).join(position_examples[:3])}
+  {{
+    "company_name": "Realistic Company Name",
+    "position": "{level_desc.title()} {profession_title}",
+    "location": "City, State or Remote",
+    "job_type": "remote|hybrid|onsite",
+    "salary_range": {{"min": {salary_min}, "max": {salary_max}}},
+    "level": "{level_desc}",
+    "requirements": ["Skill 1", "Skill 2", "Skill 3", "Skill 4"],
+    "responsibilities": ["Responsibility 1", "Responsibility 2", "Responsibility 3"],
+    "benefits": ["Benefit 1", "Benefit 2", "Benefit 3"],
+    "description": "Detailed 2-3 sentence job description"
+  }}
 ]
 
-Continue this pattern for all {count} jobs. Level: {level_desc}, Salary: ${50000 if player_level <= 3 else (90000 if player_level <= 7 else 150000)}-${90000 if player_level <= 3 else (150000 if player_level <= 7 else 250000)}"""
+Generate EXACTLY {count} jobs. Output ONLY the JSON array, no other text.
+"""
+        
+        try:
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON from response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                jobs = json.loads(json_match.group())
+                
+                # Normalize field names (AI might use camelCase)
+                for job in jobs:
+                    if 'companyName' in job:
+                        job['company_name'] = job.pop('companyName')
+                    if 'jobType' in job:
+                        job['job_type'] = job.pop('jobType')
+                    if 'salaryRange' in job:
+                        job['salary_range'] = job.pop('salaryRange')
+                    
+                    # Ensure required fields
+                    if not job.get('company_name'):
+                        job['company_name'] = "TechCorp Inc"
+                    if not job.get('position'):
+                        job['position'] = f"{level_desc.title()} {profession_title}"
+                    if not job.get('level'):
+                        job['level'] = level_desc
+                
+                logger.info(f"Successfully generated {len(jobs)} AI-driven jobs for {profession_title}")
+                return jobs
+            
+            logger.warning("No JSON found in AI response, generating simple fallback")
+            return self._generate_simple_fallback(profession_title, count, level_desc, salary_min, salary_max)
+            
+        except Exception as e:
+            logger.error(f"Failed to generate jobs with AI: {e}, using simple fallback")
+            return self._generate_simple_fallback(profession_title, count, level_desc, salary_min, salary_max)
+    
+    def _generate_simple_fallback(self, profession_title: str, count: int, level_desc: str, 
+                                  salary_min: int, salary_max: int) -> List[Dict[str, Any]]:
+        """Generate simple fallback jobs when AI fails."""
+        companies = ["TechCorp", "InnovateLabs", "GlobalSystems", "StartupHub", "Enterprise Co"]
+        locations = ["Remote", "San Francisco, CA", "New York, NY", "Austin, TX", "Seattle, WA"]
+        job_types = ["remote", "hybrid", "onsite"]
+        
+        jobs = []
+        for i in range(count):
+            jobs.append({
+                "company_name": f"{companies[i % len(companies)]} Inc",
+                "position": f"{level_desc.title()} {profession_title}",
+                "location": locations[i % len(locations)],
+                "job_type": job_types[i % len(job_types)],
+                "salary_range": {"min": salary_min, "max": salary_max},
+                "level": level_desc,
+                "requirements": [f"{profession_title} experience", "Communication skills", "Problem solving"],
+                "responsibilities": ["Perform job duties", "Collaborate with team", "Deliver results"],
+                "benefits": ["Health insurance", "401k", "PTO"],
+                "description": f"Join our team as a {profession_title}. Great opportunity to grow your career."
+            })
+        
+        return jobs
+    
+    async def conduct_interview(self, session_id: str, job_title: str, company_name: str, 
+                               requirements: List[str], level: str) -> List[Dict[str, Any]]:
+        """
+        Generate interview questions using AI.
+        Fully dynamic based on job title, company, and requirements.
+        """
+        logger.info(f"Generating interview questions for {job_title} at {company_name}")
+        
+        requirements_str = ", ".join(requirements) if requirements else "general skills"
+        
+        prompt = f"""You are an expert technical recruiter conducting an interview for a {job_title} position at {company_name}.
+
+JOB DETAILS:
+- Position: {job_title}
+- Company: {company_name}
+- Level: {level}
+- Key Requirements: {requirements_str}
+
+Generate 3 realistic, relevant interview questions that:
+1. Test the candidate's knowledge and experience for this specific role
+2. Are appropriate for the {level} level
+3. Cover different aspects: technical skills, motivation, and problem-solving
+4. Are specific to {job_title} (not generic questions)
+
+OUTPUT FORMAT (JSON array):
+[
+  {{
+    "id": "q1",
+    "question": "First interview question here",
+    "expected_answer": "Brief description of what a good answer would include"
+  }},
+  {{
+    "id": "q2",
+    "question": "Second interview question here",
+    "expected_answer": "Brief description of what a good answer would include"
+  }},
+  {{
+    "id": "q3",
+    "question": "Third interview question here",
+    "expected_answer": "Brief description of what a good answer would include"
+  }}
+]
+
+Output ONLY the JSON array, no other text."""
         
         try:
             response = self.model.generate_content(prompt)
@@ -109,106 +220,36 @@ Continue this pattern for all {count} jobs. Level: {level_desc}, Salary: ${50000
             # Extract JSON
             json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if json_match:
-                jobs = json.loads(json_match.group())
-                
-                # Validate profession matching and fix data structure
-                valid_jobs = []
-                for job in jobs:
-                    # Fix field naming (AI might use camelCase)
-                    if 'companyName' in job and 'company_name' not in job:
-                        job['company_name'] = job.pop('companyName')
-                    if 'jobType' in job and 'job_type' not in job:
-                        job['job_type'] = job.pop('jobType')
-                    if 'salaryRange' in job and 'salary_range' not in job:
-                        job['salary_range'] = job.pop('salaryRange')
-                    
-                    # Ensure required fields exist
-                    if not job.get('company_name'):
-                        job['company_name'] = "TechCorp Inc"
-                    
-                    # Check if position matches profession
-                    position = job.get('position', '').lower()
-                    matches_profession = any(
-                        prof_pos.lower() in position or position in prof_pos.lower()
-                        for prof_pos in prof_info['positions']
-                    )
-                    
-                    # Also check if any profession skills are in requirements
-                    requirements = job.get('requirements', [])
-                    has_relevant_skills = any(
-                        skill.lower() in ' '.join(requirements).lower()
-                        for skill in prof_info['skills']
-                    )
-                    
-                    if matches_profession or has_relevant_skills:
-                        valid_jobs.append(job)
-                    else:
-                        logger.warning(f"Filtered out non-matching job: {job.get('position')}")
-                
-                # If we filtered out too many, regenerate with stricter prompt
-                if len(valid_jobs) < count * 0.5:
-                    logger.warning(f"Only {len(valid_jobs)}/{count} jobs matched profession, using fallback generation")
-                    valid_jobs = self._generate_fallback_jobs(prof_info, count, level_desc, player_level)
-                
-                logger.info(f"Successfully generated {len(valid_jobs)} profession-matched jobs")
-                return valid_jobs
+                questions = json.loads(json_match.group())
+                logger.info(f"Generated {len(questions)} AI-driven interview questions")
+                return questions
             
-            logger.warning("No JSON found in response, using fallback")
-            return self._generate_fallback_jobs(prof_info, count, level_desc, player_level)
+            logger.warning("No JSON found, using fallback questions")
+            return self._generate_fallback_questions(job_title, company_name, requirements)
             
         except Exception as e:
-            logger.error(f"Failed to generate jobs: {e}, using fallback")
-            return self._generate_fallback_jobs(prof_info, count, level_desc, player_level)
+            logger.error(f"Failed to generate interview questions: {e}")
+            return self._generate_fallback_questions(job_title, company_name, requirements)
     
-    def _generate_fallback_jobs(self, prof_info: Dict, count: int, level_desc: str, player_level: int) -> List[Dict[str, Any]]:
-        """Generate fallback jobs when AI generation fails or doesn't match profession."""
-        import uuid
-        
-        salary_ranges = {
-            "entry-level": (50000, 90000),
-            "mid-level": (90000, 150000),
-            "senior": (150000, 250000)
-        }
-        salary_min, salary_max = salary_ranges.get(level_desc, (70000, 120000))
-        
-        companies = ["TechCorp", "InnovateLabs", "DataSystems", "CloudWorks", "StartupHub", 
-                    "Enterprise Solutions", "Digital Dynamics", "CodeCraft", "AgileTeam", "FutureTech"]
-        
-        jobs = []
-        for i in range(count):
-            position_title = prof_info['positions'][i % len(prof_info['positions'])]
-            company = companies[i % len(companies)]
-            
-            jobs.append({
-                "company_name": f"{company} Inc",
-                "position": f"{level_desc.title()} {position_title}",
-                "location": ["Remote", "San Francisco, CA", "New York, NY", "Austin, TX", "Seattle, WA"][i % 5],
-                "job_type": ["remote", "hybrid", "onsite"][i % 3],
-                "salary_range": {
-                    "min": salary_min + (i * 5000),
-                    "max": salary_max + (i * 5000)
-                },
-                "level": level_desc,
-                "requirements": prof_info['skills'][:3] + [prof_info['skills'][(i + 3) % len(prof_info['skills'])]],
-                "responsibilities": [
-                    f"Develop and maintain {prof_info['title'].lower()} solutions",
-                    "Collaborate with cross-functional teams",
-                    "Participate in code reviews and technical discussions",
-                    "Contribute to technical documentation"
-                ],
-                "benefits": ["Health insurance", "401k matching", "Unlimited PTO", "Remote work options"],
-                "description": f"Join {company} as a {position_title}. We're looking for a talented professional to join our growing team. You'll work on exciting projects using {', '.join(prof_info['skills'][:3])} and more."
-            })
-        
-        return jobs
-    
-    async def conduct_interview(self, session_id: str, job_title: str, company_name: str, 
-                               requirements: List[str], level: str) -> List[Dict[str, Any]]:
-        """Generate interview questions - placeholder."""
+    def _generate_fallback_questions(self, job_title: str, company_name: str, requirements: List[str]) -> List[Dict[str, Any]]:
+        """Generate fallback interview questions."""
+        req = requirements[0] if requirements else "this field"
         return [
-            {"id": "q1", "question": f"Tell me about your experience with {requirements[0] if requirements else 'this field'}?"},
-            {"id": "q2", "question": f"Why do you want to work at {company_name}?"},
-            {"id": "q3", "question": f"What interests you about the {job_title} role?"}
+            {
+                "id": "q1",
+                "question": f"Tell me about your experience with {req} and how it relates to this {job_title} role.",
+                "expected_answer": f"Candidate should demonstrate knowledge of {req} and relevant experience"
+            },
+            {
+                "id": "q2",
+                "question": f"Why do you want to work at {company_name} as a {job_title}?",
+                "expected_answer": "Candidate should show genuine interest in the company and role"
+            },
+            {
+                "id": "q3",
+                "question": f"Describe a challenging situation you faced in your career and how you resolved it.",
+                "expected_answer": "Candidate should demonstrate problem-solving skills and professional maturity"
+            }
         ]
     
     async def grade_interview(self, session_id: str, questions: List[Dict], 
@@ -934,7 +975,8 @@ Grading scale:
         session_id: str,
         question: str,
         expected_answer: str,
-        audio_path: str
+        audio_path: str,
+        mime_type: str = "audio/webm"
     ) -> Dict[str, Any]:
         """
         Grade a voice answer using Gemini's multimodal capabilities.
@@ -944,14 +986,25 @@ Grading scale:
             question: Interview question text
             expected_answer: Expected answer key points
             audio_path: Path to audio file
+            mime_type: MIME type of the audio file (default: audio/webm)
             
         Returns:
             Dictionary with transcription, score, passed, and feedback
         """
-        logger.info(f"Grading voice answer for session {session_id}")
+        logger.info(f"Grading voice answer for session {session_id} (mime_type: {mime_type})")
         
         try:
             from shared.config import USE_VERTEX_AI
+            
+            # Read audio file
+            with open(audio_path, 'rb') as f:
+                audio_data = f.read()
+            
+            # Validate audio data
+            if len(audio_data) == 0:
+                raise ValueError("Audio file is empty")
+            
+            logger.info(f"Audio file size: {len(audio_data)} bytes")
             
             # Upload audio file
             if USE_VERTEX_AI:
@@ -959,11 +1012,7 @@ Grading scale:
                 import vertexai
                 from vertexai.generative_models import Part
                 
-                # Read audio file
-                with open(audio_path, 'rb') as f:
-                    audio_data = f.read()
-                
-                audio_part = Part.from_data(audio_data, mime_type="audio/webm")
+                audio_part = Part.from_data(audio_data, mime_type=mime_type)
                 
                 prompt = f"""You are a STRICT interview grader with audio transcription capabilities.
 
@@ -1002,13 +1051,9 @@ Grading scale:
                 import google.generativeai as genai
                 from google.generativeai.types import content_types
                 
-                # Read audio file as bytes
-                with open(audio_path, 'rb') as f:
-                    audio_data = f.read()
-                
                 # Create audio part directly (no file upload needed)
                 audio_part = {
-                    "mime_type": "audio/webm",
+                    "mime_type": mime_type,
                     "data": audio_data
                 }
                 
@@ -1076,7 +1121,8 @@ Grading scale:
         task: Dict[str, Any],
         audio_path: str,
         player_level: int,
-        current_xp: int
+        current_xp: int,
+        mime_type: str = "audio/webm"
     ) -> Dict[str, Any]:
         """
         Grade a voice task solution using Gemini's multimodal capabilities.
@@ -1087,11 +1133,12 @@ Grading scale:
             audio_path: Path to audio file
             player_level: Current player level
             current_xp: Current XP
+            mime_type: MIME type of the audio file (default: audio/webm)
             
         Returns:
             Dictionary with transcription, score, passed, feedback, and XP
         """
-        logger.info(f"Grading voice task solution for session {session_id}")
+        logger.info(f"Grading voice task solution for session {session_id} (mime_type: {mime_type})")
         
         try:
             from shared.config import USE_VERTEX_AI
@@ -1101,17 +1148,23 @@ Grading scale:
             acceptance_criteria = task.get("acceptance_criteria", [])
             xp_reward = task.get("xp_reward", 50)
             
+            # Read audio file
+            with open(audio_path, 'rb') as f:
+                audio_data = f.read()
+            
+            # Validate audio data
+            if len(audio_data) == 0:
+                raise ValueError("Audio file is empty")
+            
+            logger.info(f"Audio file size: {len(audio_data)} bytes")
+            
             # Upload audio file
             if USE_VERTEX_AI:
                 # Vertex AI approach
                 import vertexai
                 from vertexai.generative_models import Part
                 
-                # Read audio file
-                with open(audio_path, 'rb') as f:
-                    audio_data = f.read()
-                
-                audio_part = Part.from_data(audio_data, mime_type="audio/webm")
+                audio_part = Part.from_data(audio_data, mime_type=mime_type)
                 
                 prompt = f"""You are a STRICT task grader with audio transcription capabilities.
 
@@ -1144,11 +1197,14 @@ Grading scale:
                 response = self.model.generate_content([prompt, audio_part])
                 
             else:
-                # Gemini API approach
+                # Gemini API approach - use inline audio instead of file upload
                 import google.generativeai as genai
                 
-                # Upload file to Gemini
-                audio_file = genai.upload_file(audio_path)
+                # Create audio part directly (no file upload needed)
+                audio_part = {
+                    "mime_type": mime_type,
+                    "data": audio_data
+                }
                 
                 prompt = f"""You are a STRICT task grader with audio transcription capabilities.
 
@@ -1178,7 +1234,7 @@ Grading scale:
 - 31-69: Incomplete or missing requirements (FAIL)
 - 70-100: Meets all requirements (PASS)"""
                 
-                response = self.model.generate_content([prompt, audio_file])
+                response = self.model.generate_content([prompt, audio_part])
             
             response_text = response.text
             

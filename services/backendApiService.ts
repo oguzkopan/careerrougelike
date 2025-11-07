@@ -9,6 +9,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { transformJob, transformJobs } from '../utils/jobTransform';
 
+// Re-export useQueryClient for use in components
+export { useQueryClient };
+
 // Cloud Run backend URL
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://career-rl-backend-1086514937351.europe-west1.run.app';
 
@@ -151,6 +154,27 @@ export const createSession = async (profession: Profession): Promise<{ sessionId
 
         const data = await response.json();
         return { sessionId: data.session_id };
+    });
+};
+
+/**
+ * Delete a session and all associated data
+ */
+export const deleteSession = async (sessionId: string): Promise<{ success: boolean }> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(`${BACKEND_URL}/sessions/${sessionId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to delete session');
+        }
+
+        const data = await response.json();
+        return { success: data.success };
     });
 };
 
@@ -518,7 +542,7 @@ export const acceptJobOffer = async (sessionId: string, jobId: string): Promise<
             headers: {
                 'Content-Type': 'application/json',
             },
-        }, 45000); // Longer timeout for CV update and task generation
+        }, 90000); // Extended timeout for CV update and task generation (3 tasks with AI)
 
         if (!response.ok) {
             await handleApiError(response, 'Failed to accept job offer');
@@ -651,7 +675,28 @@ export const getPlayerState = async (sessionId: string): Promise<PlayerState> =>
             await handleApiError(response, 'Failed to get player state');
         }
 
-        return await response.json();
+        const data = await response.json();
+        
+        // Transform snake_case to camelCase for frontend
+        return {
+            ...data,
+            sessionId: data.session_id || sessionId,
+            xpToNextLevel: data.xp_to_next_level || data.xpToNextLevel,
+            currentJob: data.current_job ? {
+                jobId: data.current_job.job_id,
+                companyName: data.current_job.company_name,
+                position: data.current_job.position,
+                startDate: data.current_job.start_date,
+                salary: data.current_job.salary
+            } : undefined,
+            stats: {
+                tasksCompleted: data.stats?.tasks_completed || 0,
+                jobsHeld: data.stats?.jobs_held || 0,
+                interviewsPassed: data.stats?.interviews_passed || 0,
+                interviewsFailed: data.stats?.interviews_failed || 0
+            },
+            cv_data: data.cv_data
+        };
     });
 };
 
@@ -672,7 +717,21 @@ export const getTasks = async (sessionId: string): Promise<WorkTask[]> => {
         }
 
         const data = await response.json();
-        return data.tasks || [];
+        const tasks = data.tasks || [];
+        
+        // Transform snake_case to camelCase
+        return tasks.map((task: any) => ({
+            ...task,
+            xpReward: task.xp_reward || task.xpReward || 100,
+            createdAt: task.created_at || task.createdAt,
+            updatedAt: task.updated_at || task.updatedAt,
+            dueDate: task.due_date || task.dueDate,
+            formatType: task.format_type || task.formatType,
+            acceptanceCriteria: task.acceptance_criteria || task.acceptanceCriteria,
+            imageUrl: task.image_url || task.imageUrl,
+            correctAnswer: task.correct_answer || task.correctAnswer,
+            blankText: task.blank_text || task.blankText
+        }));
     });
 };
 
@@ -789,16 +848,52 @@ export const submitInterviewVoiceAnswer = async (
     passed: boolean;
     feedback: string;
 }> => {
+    // Validate inputs
+    if (!sessionId || !questionId) {
+        throw new Error('Session ID and Question ID are required');
+    }
+    
+    if (!audioBlob || audioBlob.size === 0) {
+        throw new Error('Audio blob is empty or invalid');
+    }
+    
+    // Validate audio format
+    const validAudioTypes = ['audio/webm', 'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/ogg'];
+    const blobType = audioBlob.type.split(';')[0]; // Remove codec info
+    
+    if (!validAudioTypes.includes(blobType)) {
+        throw new Error(`Invalid audio format: ${audioBlob.type}. Supported formats: WebM, MP3, WAV`);
+    }
+    
+    // Validate file size (max 10MB)
+    const maxSize = 10 * 1024 * 1024;
+    if (audioBlob.size > maxSize) {
+        throw new Error('Audio file too large. Maximum size is 10MB');
+    }
+    
     return retryRequest(async () => {
+        // Construct FormData with proper MIME type
         const formData = new FormData();
         formData.append('question_id', questionId);
-        formData.append('audio', audioBlob, 'answer.webm');
+        
+        // Determine file extension based on MIME type
+        let extension = 'webm';
+        if (blobType.includes('mp3') || blobType.includes('mpeg')) {
+            extension = 'mp3';
+        } else if (blobType.includes('wav')) {
+            extension = 'wav';
+        } else if (blobType.includes('ogg')) {
+            extension = 'ogg';
+        }
+        
+        formData.append('audio', audioBlob, `answer.${extension}`);
 
         const response = await fetchWithTimeout(
             `${BACKEND_URL}/sessions/${sessionId}/interview/voice`,
             {
                 method: 'POST',
                 body: formData,
+                // Don't set Content-Type header - let browser set it with boundary
             },
             90000 // Longer timeout for audio processing
         );
@@ -808,7 +903,7 @@ export const submitInterviewVoiceAnswer = async (
         }
 
         return await response.json();
-    });
+    }, 1); // Only retry once for voice submissions
 };
 
 /**
