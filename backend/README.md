@@ -6,52 +6,58 @@ A Python-based multi-agent AI system built with **Google's Agent Development Kit
 
 ## Architecture Overview
 
-The backend uses ADK's agent orchestration patterns to coordinate multiple AI agents that communicate through ADK's event system and share state via the `session.state` dictionary.
+The backend uses a **Workflow Orchestrator** to coordinate multiple AI agents powered by Gemini 2.5 Flash. The orchestrator calls the Gemini API directly with agent-specific prompts, providing better reliability and control than traditional ADK patterns.
 
 📊 **See detailed diagrams**: [diagrams/](./diagrams/)
 - [Agent Workflow Diagram](./diagrams/agent-workflow.md) - Visual representation of agent communication
-- [State Flow Diagram](./diagrams/state-flow.md) - How session.state evolves through the game
-- [ADK Patterns](./diagrams/adk-patterns.md) - Sequential, Parallel, and Loop pattern examples
+- [State Flow Diagram](./diagrams/state-flow.md) - How session state evolves through the game
+- [ADK Patterns](./diagrams/adk-patterns.md) - Agent pattern concepts (reference)
 
 ### Agent Roles and Communication
 
-Each agent has a specific purpose and communicates with others through the shared session state:
+Each agent is defined with specific prompts and instructions. The Workflow Orchestrator invokes them via Gemini API:
 
-- **Interviewer Agent** (`LlmAgent`): Generates profession-specific interview questions based on `{profession}` and `{level}` from state. Outputs to `interview_questions` key.
+- **Job Agent** (`job_agent.py`): Generates realistic job listings based on player level and profession. Creates 10 diverse positions with company details, requirements, and salaries.
   
-- **Grader Agent** (`LlmAgent`): Evaluates player answers by reading `{question}`, `{expected_answer}`, and `{player_answer}` from state. Returns score (0-100), pass/fail status, and feedback to `grading_result` key. Used for both interview and task grading.
+- **Interview Agent** (`interviewer_agent.py`): Creates profession-specific interview questions (3-5 questions) tailored to the job requirements and player level.
   
-- **Task Generator Agent** (`LlmAgent`): Creates profession-specific work tasks (code for iOS, SQL for Data Analyst, design for Designer, sales scenarios for Sales). Reads `{profession}` and `{level}`, outputs to `current_task` key with prompt, acceptance criteria, and difficulty.
+- **Task Agent** (`task_agent.py`): Generates profession-specific work tasks with multiple formats (text answer, multiple choice, fill-in-blank, matching, code review, prioritization). Scales difficulty based on player level.
   
-- **CV Writer Agent** (`LlmAgent`): Updates player CV based on completed tasks. Reads `{completed_tasks}` and `{scores}` from state, generates resume bullets with measurable impact and skills list. Outputs to `cv_data` key.
+- **Grader Agent** (`grader_agent.py`): Evaluates player submissions (interviews and tasks) with strict grading criteria. Returns score (0-100), pass/fail status (≥70 = pass), and detailed feedback. Includes pre-validation checks for gibberish, length, and relevance.
   
-- **Event Generator Agent** (`LlmAgent`): Generates random career events (incidents, promotions, scope creep, budget cuts) with 2-4 choice options. Reads `{profession}`, `{level}`, and `{recent_performance}`, outputs to `current_event` key.
+- **CV Agent** (`cv_writer_agent.py`): Updates player CV based on completed tasks. Generates professional resume bullets with measurable impact and extracts demonstrated skills.
   
-- **Root Agent** (`SequentialAgent`): Orchestrates all agents in sequence, managing the overall workflow and ensuring state is passed correctly between agents.
+- **Meeting Agent** (`meeting_agent.py`): Generates virtual meeting scenarios with AI colleagues, discussion topics, and participant personalities.
 
 ### How Agents Communicate
 
-1. **Shared State Dictionary**: All agents read from and write to `session.state`, a dictionary that persists throughout the session.
+1. **Workflow Orchestrator**: Central coordinator that manages all agent invocations. Located in `agents/workflow_orchestrator.py`.
 
-2. **Event System**: Agents yield events when they complete, which the ADK Runner processes and forwards to the next agent in the workflow.
+2. **Direct Gemini API Calls**: Orchestrator formats prompts with context and calls Gemini 2.5 Flash directly (no ADK Runner).
 
-3. **Sequential Execution**: The Root Agent runs sub-agents in order, with each agent's output becoming available to subsequent agents.
+3. **State Management**: All state is stored in Firestore and passed as context to agents. No shared session.state dictionary.
 
-4. **State Persistence**: After each agent invocation, the Gateway API persists the updated state to Firestore, ensuring durability across requests.
+4. **Error Handling**: Built-in fallbacks for AI failures, with simple default responses when Gemini API calls fail.
+
+5. **Response Parsing**: Orchestrator extracts JSON from AI responses, validates structure, and returns structured data to Gateway.
 
 ## Project Structure
 
 ```
 backend/
-├── agents/                          # ADK agents and workflows
+├── agents/                          # AI agents and orchestrator
 │   ├── __init__.py
-│   ├── interviewer_agent.py        # LlmAgent: Generates interview questions
-│   ├── grader_agent.py             # LlmAgent: Evaluates answers and tasks
-│   ├── task_generator_agent.py     # LlmAgent: Creates work tasks
-│   ├── cv_writer_agent.py          # LlmAgent: Updates CV from accomplishments
-│   ├── event_generator_agent.py    # LlmAgent: Generates career events
-│   ├── workflows.py                # SequentialAgent, ParallelAgent, LoopAgent workflows
-│   └── root_agent.py               # Root SequentialAgent orchestrator
+│   ├── workflow_orchestrator.py    # Main orchestrator - coordinates all agents
+│   ├── job_agent.py                # Agent definition: Generates job listings
+│   ├── interviewer_agent.py        # Agent definition: Generates interview questions
+│   ├── task_agent.py               # Agent definition: Creates work tasks
+│   ├── grader_agent.py             # Agent definition: Evaluates answers and tasks
+│   ├── cv_writer_agent.py          # Agent definition: Updates CV from accomplishments
+│   ├── meeting_agent.py            # Agent definition: Generates meeting scenarios
+│   ├── task_generator_agent.py     # Legacy: Task generation (reference)
+│   ├── event_generator_agent.py    # Legacy: Career events (reference)
+│   ├── workflows.py                # Legacy: ADK workflow patterns (reference)
+│   └── root_agent.py               # Legacy: Root agent (reference)
 ├── gateway/                         # FastAPI REST API
 │   ├── __init__.py
 │   ├── main.py                     # FastAPI app and endpoints
@@ -83,7 +89,8 @@ backend/
 
 - Python 3.9 or higher
 - Google Cloud Project with Firestore enabled
-- Google API Key for Gemini 2.5 Flash
+- Google API Key for Gemini 2.5 Flash (or Vertex AI credentials)
+- `google-generativeai` package (included in requirements.txt)
 
 ### Local Development Setup
 
@@ -692,13 +699,14 @@ gcloud run services update career-rl-backend \
 
 ## Technologies Used
 
-- **Google ADK**: Multi-agent orchestration framework
+- **Workflow Orchestrator**: Custom multi-agent coordination system
 - **Python 3.9+**: Primary programming language
 - **FastAPI**: REST API gateway
-- **Gemini 2.5 Flash**: LLM for all agent reasoning
+- **Gemini 2.5 Flash**: LLM for all agent reasoning (via direct API calls)
 - **Firestore**: Session state persistence
 - **Cloud Run**: Serverless container deployment
 - **Docker**: Containerization
+- **google-generativeai**: Python SDK for Gemini API
 
 ## Multi-Agent Patterns Demonstrated
 

@@ -18,7 +18,7 @@ Complete system architecture documentation for the AI-powered job market simulat
 
 ## System Overview
 
-CareerRoguelike is a full-stack gamified career simulation that demonstrates advanced multi-agent AI collaboration. The system uses Google's Agent Development Kit (ADK) to orchestrate specialized AI agents that work together to create a dynamic, realistic job market experience.
+CareerRoguelike is a full-stack gamified career simulation that demonstrates advanced multi-agent AI collaboration. The system uses a Workflow Orchestrator to coordinate specialized AI agents powered by Gemini 2.5 Flash that work together to create a dynamic, realistic job market experience.
 
 ### High-Level Architecture
 
@@ -74,7 +74,7 @@ CareerRoguelike is a full-stack gamified career simulation that demonstrates adv
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
 │                      Agent Layer                                 │
-│                  (Google ADK + Gemini)                           │
+│              (Workflow Orchestrator + Gemini)                    │
 │                                                                   │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
 │  │   Job    │  │Interview │  │   Task   │  │  Grader  │       │
@@ -83,12 +83,12 @@ CareerRoguelike is a full-stack gamified career simulation that demonstrates adv
 │       │             │              │             │              │
 │       └─────────────┴──────────────┴─────────────┘              │
 │                         │                                        │
-│                    ┌────▼─────┐                                 │
-│                    │    CV    │                                 │
-│                    │  Agent   │                                 │
-│                    └──────────┘                                 │
+│                    ┌────▼─────┐      ┌──────────┐              │
+│                    │    CV    │      │ Meeting  │              │
+│                    │  Agent   │      │  Agent   │              │
+│                    └──────────┘      └──────────┘              │
 │                                                                   │
-│  All agents powered by Gemini 2.5 Flash                         │
+│  All agents invoked via Orchestrator → Gemini 2.5 Flash        │
 └────────────────────────┬────────────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
@@ -194,22 +194,28 @@ agents/workflow_orchestrator.py
 ├── grade_task(session_id, task, solution, player_level, current_xp)
 └── update_cv(session_id, current_cv, action, action_data)
 
-agents/ (AI Agents)
+agents/ (AI Agents - Invoked via Orchestrator)
 │
-├── job_agent.py (LlmAgent)
+├── workflow_orchestrator.py
+│   └── Coordinates all agent execution via Gemini API
+│
+├── job_agent.py (Agent Definition)
 │   └── Generates realistic job listings
 │
-├── interview_agent.py (LlmAgent)
+├── interviewer_agent.py (Agent Definition)
 │   └── Creates job-specific interview questions
 │
-├── task_agent.py (LlmAgent)
+├── task_agent.py (Agent Definition)
 │   └── Generates profession-specific work tasks
 │
-├── grader_agent.py (LlmAgent)
+├── grader_agent.py (Agent Definition)
 │   └── Evaluates answers and provides feedback
 │
-└── cv_agent.py (LlmAgent)
-    └── Updates resume based on accomplishments
+├── cv_writer_agent.py (Agent Definition)
+│   └── Updates resume based on accomplishments
+│
+└── meeting_agent.py (Agent Definition)
+    └── Generates virtual meeting scenarios
 
 shared/firestore_manager.py
 │
@@ -350,42 +356,50 @@ shared/firestore_manager.py
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  Workflow Orchestrator                   │
+│            (workflow_orchestrator.py)                    │
 │                                                           │
 │  Coordinates agent execution and manages state flow      │
+│  • Prepares context from session state                   │
+│  • Formats prompts with agent-specific instructions      │
+│  • Calls Gemini API directly                             │
+│  • Parses and validates responses                        │
+│  • Returns structured output                             │
 └───────┬─────────────────────────────────────────────────┘
         │
-        │ 1. Prepare context from session state
+        │ 1. Prepare context (job info, player level, etc)
         │
         ▼
 ┌───────────────────────────────────────────────────────────┐
-│                    Individual Agent                        │
+│                  Gemini 2.5 Flash API                      │
 │                                                            │
 │  ┌──────────────────────────────────────────────────┐    │
-│  │  1. Receive context (job info, player level, etc) │    │
+│  │  1. Receive formatted prompt with context        │    │
 │  └────────────────────┬───────────────────────────────┘    │
 │                       │                                    │
 │                       ▼                                    │
 │  ┌──────────────────────────────────────────────────┐    │
-│  │  2. Format prompt with instruction template       │    │
+│  │  2. Generate response based on agent role        │    │
+│  │     (Job listings, questions, grading, etc.)     │    │
 │  └────────────────────┬───────────────────────────────┘    │
 │                       │                                    │
 │                       ▼                                    │
 │  ┌──────────────────────────────────────────────────┐    │
-│  │  3. Call Gemini 2.5 Flash API                     │    │
-│  └────────────────────┬───────────────────────────────┘    │
-│                       │                                    │
-│                       ▼                                    │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │  4. Parse and validate response                   │    │
-│  └────────────────────┬───────────────────────────────┘    │
-│                       │                                    │
-│                       ▼                                    │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │  5. Return structured output                      │    │
+│  │  3. Return JSON-formatted response                │    │
 │  └──────────────────────────────────────────────────┘    │
 └───────────────────────┬───────────────────────────────────┘
                         │
-                        │ 6. Update session state
+                        │ 4. Parse and validate JSON
+                        │
+                        ▼
+┌───────────────────────────────────────────────────────────┐
+│                  Workflow Orchestrator                     │
+│                                                            │
+│  • Validates response structure                           │
+│  • Handles errors with fallbacks                          │
+│  • Returns structured data to Gateway                     │
+└───────────────────────┬───────────────────────────────────┘
+                        │
+                        │ 5. Update session state
                         │
                         ▼
 ┌───────────────────────────────────────────────────────────┐
@@ -394,6 +408,13 @@ shared/firestore_manager.py
 │  Persist updated state for durability                     │
 └────────────────────────────────────────────────────────────┘
 ```
+
+**Key Points**:
+- **No ADK Runner**: Orchestrator calls Gemini API directly for reliability
+- **Agent Definitions**: Agent files define prompts and instructions
+- **Centralized Control**: Orchestrator manages all agent invocations
+- **Error Handling**: Built-in fallbacks for AI failures
+- **State Management**: All state flows through Firestore
 
 ---
 

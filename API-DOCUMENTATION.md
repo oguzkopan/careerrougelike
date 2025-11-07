@@ -6,6 +6,8 @@ Complete REST API reference for the CareerRoguelike backend service.
 
 **Local Development**: `http://localhost:8080`
 
+**Architecture**: Multi-agent system with Workflow Orchestrator coordinating 6 specialized AI agents powered by Gemini 2.5 Flash.
+
 ---
 
 ## Table of Contents
@@ -16,8 +18,27 @@ Complete REST API reference for the CareerRoguelike backend service.
 4. [Interview Endpoints](#interview-endpoints)
 5. [Task Management](#task-management)
 6. [Player State](#player-state)
-7. [Error Handling](#error-handling)
-8. [Rate Limits](#rate-limits)
+7. [Voice Input Endpoints](#voice-input-endpoints)
+8. [Meeting System Endpoints](#meeting-system-endpoints)
+9. [Error Handling](#error-handling)
+10. [Rate Limits](#rate-limits)
+
+---
+
+## Agent Architecture
+
+The backend uses a **Workflow Orchestrator** that coordinates 6 specialized AI agents:
+
+| Agent | Purpose | Input | Output |
+|-------|---------|-------|--------|
+| **Job Agent** | Generate job listings | Player level, profession, count | Array of 10 job objects |
+| **Interview Agent** | Create interview questions | Job details, requirements | Array of 3-5 questions |
+| **Task Agent** | Generate work tasks | Job title, player level | Task object with requirements |
+| **Grader Agent** | Evaluate submissions | Question/task, answer | Score, pass/fail, feedback |
+| **CV Agent** | Update resume | Completed tasks | Resume bullets and skills |
+| **Meeting Agent** | Create meeting scenarios | Meeting type, job context | Meeting with participants |
+
+All agents are invoked via the Workflow Orchestrator which calls Gemini 2.5 Flash API directly.
 
 ---
 

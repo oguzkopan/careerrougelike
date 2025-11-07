@@ -1074,27 +1074,80 @@ async def accept_job_offer(
         # Add job to history
         firestore_manager.add_job_to_history(session_id, player_state["current_job"])
         
-        # Generate initial tasks (3-5 tasks)
+        # Generate initial tasks and meetings (dynamic based on job level)
         import uuid
-        tasks_to_generate = 3
+        import random
         generated_tasks = []
         
-        for i in range(tasks_to_generate):
-            task = await workflow_orchestrator.generate_task(
-                session_id=session_id,
-                job_title=job_data.get("position", ""),
-                company_name=job_data.get("company_name", ""),
-                player_level=session_data.get("level", 1),
-                tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0) + i
-            )
-            
-            task_id = f"task-{uuid.uuid4().hex[:12]}"
-            task["id"] = task_id
-            
-            firestore_manager.create_task(task_id, session_id, task)
-            generated_tasks.append(task)
+        player_level = session_data.get("level", 1)
+        job_level = job_data.get("level", "entry")
         
-        logger.info(f"Job accepted, CV updated, and {len(generated_tasks)} tasks generated")
+        # Determine task and meeting counts based on job level
+        if job_level == "entry":
+            # Entry level: 2-3 tasks, 1 meeting
+            num_tasks = random.randint(2, 3)
+            num_meetings = 1
+            meeting_types = ["one_on_one", "team_meeting"]
+        elif job_level == "mid":
+            # Mid level: 3-4 tasks, 1-2 meetings
+            num_tasks = random.randint(3, 4)
+            num_meetings = random.randint(1, 2)
+            meeting_types = ["one_on_one", "team_meeting", "project_update"]
+        else:  # senior
+            # Senior level: 4-5 tasks, 2-3 meetings
+            num_tasks = random.randint(4, 5)
+            num_meetings = random.randint(2, 3)
+            meeting_types = ["one_on_one", "team_meeting", "project_update", "stakeholder_presentation"]
+        
+        logger.info(f"Generating {num_tasks} work tasks and {num_meetings} meetings for {job_level} level job")
+        
+        # Generate work tasks
+        for i in range(num_tasks):
+            try:
+                task = await workflow_orchestrator.generate_task(
+                    session_id=session_id,
+                    job_title=job_data.get("position", ""),
+                    company_name=job_data.get("company_name", ""),
+                    player_level=player_level,
+                    tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0) + i
+                )
+                
+                task_id = f"task-{uuid.uuid4().hex[:12]}"
+                task["id"] = task_id
+                task["task_type"] = "work"
+                
+                firestore_manager.create_task(task_id, session_id, task)
+                generated_tasks.append(task)
+            except Exception as e:
+                logger.error(f"Failed to generate work task {i+1}: {e}")
+        
+        # Generate meeting tasks
+        for i in range(num_meetings):
+            meeting_type = random.choice(meeting_types)
+            
+            try:
+                meeting_task = await workflow_orchestrator.generate_meeting_as_task(
+                    session_id=session_id,
+                    meeting_type=meeting_type,
+                    job_title=job_data.get("position", ""),
+                    company_name=job_data.get("company_name", ""),
+                    player_level=player_level,
+                    recent_performance="new_hire" if i == 0 else "average"
+                )
+                
+                meeting_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                meeting_task["id"] = meeting_task_id
+                meeting_task["task_type"] = "meeting"
+                
+                firestore_manager.create_task(meeting_task_id, session_id, meeting_task)
+                generated_tasks.append(meeting_task)
+                
+                logger.info(f"Generated meeting task {i+1}: {meeting_task.get('title', 'Meeting')}")
+            except Exception as e:
+                logger.error(f"Failed to generate meeting task {i+1}: {e}")
+                # Continue without this meeting if it fails
+        
+        logger.info(f"Job accepted, CV updated, and {len(generated_tasks)} tasks generated ({num_tasks} work + {num_meetings} meetings)")
         
         # Update stats
         stats = session_data.get("stats", {})

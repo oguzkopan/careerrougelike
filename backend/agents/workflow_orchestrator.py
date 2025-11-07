@@ -912,13 +912,30 @@ Grading scale:
             response = self.model.generate_content(prompt)
             response_text = response.text
             
-            # Extract JSON
+            # Extract JSON and clean control characters
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                result = json.loads(json_match.group())
-                score = result.get("score", 0)
-                passed = result.get("passed", False)
-                feedback = result.get("feedback", "No feedback provided")
+                json_str = json_match.group()
+                # Remove control characters that break JSON parsing
+                json_str = json_str.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                # Also handle other control characters
+                json_str = ''.join(char if ord(char) >= 32 or char in '\n\r\t' else ' ' for char in json_str)
+                
+                try:
+                    result = json.loads(json_str)
+                    score = result.get("score", 0)
+                    passed = result.get("passed", False)
+                    feedback = result.get("feedback", "No feedback provided")
+                except json.JSONDecodeError as je:
+                    logger.error(f"JSON decode error: {je}, attempting fallback parsing")
+                    # Fallback: try to extract score and feedback manually
+                    score_match = re.search(r'"score":\s*(\d+)', json_str)
+                    passed_match = re.search(r'"passed":\s*(true|false)', json_str, re.IGNORECASE)
+                    feedback_match = re.search(r'"feedback":\s*"([^"]*)"', json_str)
+                    
+                    score = int(score_match.group(1)) if score_match else 50
+                    passed = passed_match.group(1).lower() == 'true' if passed_match else False
+                    feedback = feedback_match.group(1) if feedback_match else "Could not parse feedback"
             else:
                 score = 50
                 passed = False
@@ -1533,6 +1550,172 @@ Grading scale:
                 "feedback": f"Error evaluating response: {str(e)}",
                 "strengths": ["Participated in the meeting"],
                 "improvements": ["Try again"]
+            }
+    
+    async def generate_meeting_as_task(
+        self,
+        session_id: str,
+        meeting_type: str,
+        job_title: str,
+        company_name: str,
+        player_level: int,
+        recent_performance: str
+    ) -> Dict[str, Any]:
+        """
+        Generate a meeting as a task that appears in the task list.
+        
+        Returns a task object with meeting data embedded.
+        """
+        logger.info(f"Generating meeting task for session {session_id}")
+        
+        # Generate meeting scenario
+        meeting_data = await self.generate_meeting(
+            session_id=session_id,
+            meeting_type=meeting_type,
+            job_title=job_title,
+            company_name=company_name,
+            player_level=player_level,
+            recent_performance=recent_performance
+        )
+        
+        # Convert meeting to task format
+        task = {
+            "task_type": "meeting",
+            "format_type": "meeting",
+            "title": meeting_data.get("title", "Team Meeting"),
+            "description": meeting_data.get("context", "Participate in a workplace meeting"),
+            "meeting_data": meeting_data,
+            "difficulty": 5,
+            "xp_reward": 30,  # Meetings give moderate XP
+            "status": "pending",
+            "requirements": [
+                "Participate in all discussion topics",
+                "Provide thoughtful responses",
+                "Engage professionally with colleagues"
+            ],
+            "acceptance_criteria": [
+                "Complete all discussion topics",
+                "Maintain professional communication",
+                "Contribute meaningfully to discussions"
+            ]
+        }
+        
+        return task
+    
+    async def complete_meeting_and_generate_action_items(
+        self,
+        session_id: str,
+        meeting_data: Dict[str, Any],
+        responses: List[Dict[str, Any]],
+        overall_score: float,
+        job_title: str,
+        company_name: str,
+        player_level: int
+    ) -> Dict[str, Any]:
+        """
+        Complete a meeting and generate action items (new tasks) based on the discussion.
+        
+        Args:
+            session_id: Session identifier
+            meeting_data: Original meeting data
+            responses: List of player responses with scores
+            overall_score: Average score across all topics
+            job_title: Player's job title
+            company_name: Company name
+            player_level: Player level
+            
+        Returns:
+            Dictionary with meeting notes and action items (tasks)
+        """
+        logger.info(f"Completing meeting and generating action items for session {session_id}")
+        
+        # Prepare meeting summary
+        topics_discussed = [topic.get("question", "") for topic in meeting_data.get("topics", [])]
+        
+        prompt = f"""You are concluding a workplace meeting. Generate meeting notes and action items.
+
+Meeting: {meeting_data.get("title", "Team Meeting")}
+Context: {meeting_data.get("context", "")}
+Topics Discussed: {', '.join(topics_discussed)}
+Player Performance Score: {overall_score:.0f}/100
+Job Title: {job_title}
+Company: {company_name}
+Player Level: {player_level}
+
+Based on the meeting discussion, generate:
+1. Meeting notes (2-3 key takeaways)
+2. 1-2 action items (tasks) that came out of the meeting
+
+Action items should be:
+- Specific and actionable
+- Related to topics discussed
+- Appropriate for the player's level
+- Realistic follow-up work
+
+Output ONLY a JSON object (no markdown, no explanation):
+{{
+  "meeting_notes": [
+    "Key takeaway 1",
+    "Key takeaway 2",
+    "Key takeaway 3"
+  ],
+  "action_items": [
+    {{
+      "title": "Action item title",
+      "description": "What needs to be done (2-3 sentences)",
+      "requirements": ["Requirement 1", "Requirement 2"],
+      "acceptance_criteria": ["Criterion 1", "Criterion 2"],
+      "difficulty": 1-10,
+      "xp_reward": 20-60,
+      "priority": "high|medium|low"
+    }}
+  ],
+  "next_meeting_suggested": {{
+    "meeting_type": "one_on_one|team_meeting|project_update",
+    "reason": "Why a follow-up meeting might be needed",
+    "suggested_timeframe": "in 1 week|in 2 weeks|next month"
+  }}
+}}
+
+Make action items realistic and directly related to the meeting discussion."""
+        
+        try:
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                logger.info(f"Generated {len(result.get('action_items', []))} action items from meeting")
+                return result
+            else:
+                logger.warning("No JSON found in action items generation")
+                return {
+                    "meeting_notes": [
+                        "Meeting completed successfully",
+                        "Team aligned on current priorities",
+                        "Action items identified for follow-up"
+                    ],
+                    "action_items": [
+                        {
+                            "title": "Follow up on meeting discussion",
+                            "description": "Complete the action items discussed in the meeting",
+                            "requirements": ["Review meeting notes", "Complete assigned work"],
+                            "acceptance_criteria": ["Work completed", "Quality standards met"],
+                            "difficulty": 5,
+                            "xp_reward": 40,
+                            "priority": "medium"
+                        }
+                    ],
+                    "next_meeting_suggested": None
+                }
+        except Exception as e:
+            logger.error(f"Failed to generate action items: {e}")
+            return {
+                "meeting_notes": ["Meeting completed"],
+                "action_items": [],
+                "next_meeting_suggested": None
             }
     
     async def check_for_event(

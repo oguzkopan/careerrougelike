@@ -323,6 +323,7 @@ class FirestoreManager:
             task_data['created_at'] = datetime.utcnow()
             task_data['updated_at'] = datetime.utcnow()
             task_data['status'] = task_data.get('status', 'pending')  # pending, in-progress, completed
+            task_data['task_type'] = task_data.get('task_type', 'work')  # work, meeting
             
             self.db.collection(self.tasks_collection).document(task_id).set(task_data)
         except Exception as e:
