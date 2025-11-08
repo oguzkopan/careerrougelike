@@ -1305,16 +1305,69 @@ async def submit_task(
             result["level_up"] = xp_result["leveled_up"]
             result["xp_to_next_level"] = xp_result["xp_to_next_level"]
             
+            # Update task completion stats
+            stats = session_data.get("stats", {})
+            tasks_completed = stats.get("tasks_completed", 0) + 1
+            stats["tasks_completed"] = tasks_completed
+            firestore_manager.update_session(session_id, {"stats": stats})
+            
+            # Check if a meeting should be triggered
+            recent_tasks = firestore_manager.get_completed_tasks(session_id, limit=5)
+            meeting_trigger = await workflow_orchestrator.should_trigger_meeting(
+                session_id=session_id,
+                tasks_completed=tasks_completed,
+                player_level=result["new_level"],
+                recent_tasks=recent_tasks
+            )
+            
+            if meeting_trigger:
+                # Generate and schedule a meeting
+                current_job = session_data.get("current_job", {})
+                if current_job:
+                    try:
+                        meeting_data = await workflow_orchestrator.generate_meeting(
+                            session_id=session_id,
+                            meeting_type=meeting_trigger["meeting_type"],
+                            job_title=current_job.get("position", ""),
+                            company_name=current_job.get("company_name", ""),
+                            player_level=result["new_level"],
+                            recent_performance=meeting_trigger["recent_performance"]
+                        )
+                        
+                        # Save meeting to Firestore
+                        meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                        meeting_data["id"] = meeting_id
+                        meeting_data["session_id"] = session_id
+                        meeting_data["status"] = "scheduled"
+                        meeting_data["responses"] = []
+                        meeting_data["current_topic_index"] = 0
+                        meeting_data["conversation_history"] = []
+                        
+                        firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+                        
+                        # Update last meeting trigger
+                        firestore_manager.update_session(session_id, {
+                            "last_meeting_trigger_at_task": tasks_completed
+                        })
+                        
+                        result["meeting_triggered"] = True
+                        result["meeting_id"] = meeting_id
+                        result["meeting_type"] = meeting_trigger["meeting_type"]
+                        
+                        logger.info(f"Meeting triggered: {meeting_id} ({meeting_trigger['meeting_type']})")
+                    except Exception as e:
+                        logger.error(f"Failed to generate meeting: {e}")
+                        # Don't fail task submission if meeting generation fails
+            
             # Generate new task if needed
             active_tasks = firestore_manager.get_active_tasks(session_id)
             if len(active_tasks) < 3:
-                import uuid
                 new_task = await workflow_orchestrator.generate_task(
                     session_id=session_id,
                     job_title=session_data.get("current_job", {}).get("position", ""),
                     company_name=session_data.get("current_job", {}).get("company_name", ""),
                     player_level=result["new_level"],
-                    tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0)
+                    tasks_completed=tasks_completed
                 )
                 
                 new_task_id = f"task-{uuid.uuid4().hex[:12]}"
@@ -1685,16 +1738,69 @@ async def submit_task_voice_solution(
                 result["level_up"] = xp_result["leveled_up"]
                 result["xp_to_next_level"] = xp_result["xp_to_next_level"]
                 
+                # Update task completion stats
+                stats = session_data.get("stats", {})
+                tasks_completed = stats.get("tasks_completed", 0) + 1
+                stats["tasks_completed"] = tasks_completed
+                firestore_manager.update_session(session_id, {"stats": stats})
+                
+                # Check if a meeting should be triggered
+                recent_tasks = firestore_manager.get_completed_tasks(session_id, limit=5)
+                meeting_trigger = await workflow_orchestrator.should_trigger_meeting(
+                    session_id=session_id,
+                    tasks_completed=tasks_completed,
+                    player_level=result["new_level"],
+                    recent_tasks=recent_tasks
+                )
+                
+                if meeting_trigger:
+                    # Generate and schedule a meeting
+                    current_job = session_data.get("current_job", {})
+                    if current_job:
+                        try:
+                            meeting_data = await workflow_orchestrator.generate_meeting(
+                                session_id=session_id,
+                                meeting_type=meeting_trigger["meeting_type"],
+                                job_title=current_job.get("position", ""),
+                                company_name=current_job.get("company_name", ""),
+                                player_level=result["new_level"],
+                                recent_performance=meeting_trigger["recent_performance"]
+                            )
+                            
+                            # Save meeting to Firestore
+                            meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                            meeting_data["id"] = meeting_id
+                            meeting_data["session_id"] = session_id
+                            meeting_data["status"] = "scheduled"
+                            meeting_data["responses"] = []
+                            meeting_data["current_topic_index"] = 0
+                            meeting_data["conversation_history"] = []
+                            
+                            firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+                            
+                            # Update last meeting trigger
+                            firestore_manager.update_session(session_id, {
+                                "last_meeting_trigger_at_task": tasks_completed
+                            })
+                            
+                            result["meeting_triggered"] = True
+                            result["meeting_id"] = meeting_id
+                            result["meeting_type"] = meeting_trigger["meeting_type"]
+                            
+                            logger.info(f"Meeting triggered: {meeting_id} ({meeting_trigger['meeting_type']})")
+                        except Exception as e:
+                            logger.error(f"Failed to generate meeting: {e}")
+                            # Don't fail task submission if meeting generation fails
+                
                 # Generate new task if needed
                 active_tasks = firestore_manager.get_active_tasks(session_id)
                 if len(active_tasks) < 3:
-                    import uuid
                     new_task = await workflow_orchestrator.generate_task(
                         session_id=session_id,
                         job_title=session_data.get("current_job", {}).get("position", ""),
                         company_name=session_data.get("current_job", {}).get("company_name", ""),
                         player_level=result["new_level"],
-                        tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0)
+                        tasks_completed=tasks_completed
                     )
                     
                     new_task_id = f"task-{uuid.uuid4().hex[:12]}"
@@ -1751,6 +1857,56 @@ async def submit_task_voice_solution(
 class GenerateMeetingRequest(BaseModel):
     """Request model for generating a meeting"""
     meeting_type: str = Field(..., description="Type of meeting (one_on_one, team_meeting, stakeholder_presentation, performance_review, project_update, feedback_session)")
+
+
+@app.get("/sessions/{session_id}/meetings")
+async def get_meetings(
+    session_id: str,
+    status: Optional[str] = None,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get all meetings for a session
+    
+    Args:
+        session_id: Unique session identifier
+        status: Optional filter by status (scheduled, in_progress, completed)
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Array of meetings (scheduled, in-progress, completed)
+        
+    Raises:
+        HTTPException: If session not found or access denied
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meetings from Firestore
+        meetings = firestore_manager.get_meetings_by_session(session_id, status=status)
+        
+        return {"meetings": meetings}
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get meetings for session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get meetings: {str(e)}"
+        )
 
 
 @app.post("/sessions/{session_id}/meetings/generate")
@@ -1913,6 +2069,146 @@ async def get_meeting(
         )
 
 
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/join")
+async def join_meeting(
+    session_id: str,
+    meeting_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Join a scheduled meeting
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Initial meeting state with first topic and AI discussion
+        
+    Raises:
+        HTTPException: If session or meeting not found, or meeting already started
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        # Check if meeting is already in progress or completed
+        current_status = meeting_data.get("status", "scheduled")
+        if current_status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Meeting has already been completed"
+            )
+        
+        logger.info(f"Joining meeting {meeting_id} for session {session_id}")
+        
+        # Update status to in_progress
+        firestore_manager.update_meeting_status(meeting_id, "in_progress")
+        
+        # Initialize conversation with first topic
+        topics = meeting_data.get("topics", [])
+        if not topics:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Meeting has no topics"
+            )
+        
+        first_topic = topics[0]
+        
+        # Generate initial AI discussion for the first topic
+        conversation_history = []
+        
+        # Add topic introduction
+        topic_intro = {
+            "id": f"msg-{uuid.uuid4().hex[:8]}",
+            "type": "topic_intro",
+            "content": f"Let's discuss: {first_topic.get('question', '')}",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        conversation_history.append(topic_intro)
+        
+        # Generate AI participant discussion
+        participants = meeting_data.get("participants", [])
+        for participant in participants[:2]:  # First 2 AI participants discuss
+            if participant.get("role") != "Player":
+                ai_message = await workflow_orchestrator.generate_meeting_response(
+                    session_id=session_id,
+                    meeting_context=meeting_data.get("context", ""),
+                    current_topic=first_topic.get("question", ""),
+                    participant_name=participant.get("name", ""),
+                    participant_role=participant.get("role", ""),
+                    participant_personality=participant.get("personality", ""),
+                    player_response=""  # Initial discussion, no player response yet
+                )
+                
+                conversation_msg = {
+                    "id": f"msg-{uuid.uuid4().hex[:8]}",
+                    "type": "ai_response",
+                    "participant_id": participant.get("id", ""),
+                    "participant_name": participant.get("name", ""),
+                    "participant_role": participant.get("role", ""),
+                    "content": ai_message.get("response", ""),
+                    "sentiment": ai_message.get("sentiment", "neutral"),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                conversation_history.append(conversation_msg)
+        
+        # Update meeting with conversation history
+        firestore_manager.update_meeting(meeting_id, {
+            "status": "in_progress",
+            "conversation_history": conversation_history,
+            "started_at": datetime.utcnow().isoformat()
+        })
+        
+        logger.info(f"Meeting {meeting_id} started with {len(conversation_history)} initial messages")
+        
+        return {
+            "meeting_id": meeting_id,
+            "status": "in_progress",
+            "current_topic_index": 0,
+            "conversation_history": conversation_history,
+            "is_player_turn": True
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to join meeting {meeting_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to join meeting: {str(e)}"
+        )
+
+
 class RespondToMeetingRequest(BaseModel):
     """Request model for responding to a meeting topic"""
     topic_id: str = Field(..., description="ID of the topic being responded to")
@@ -2052,14 +2348,14 @@ async def respond_to_meeting(
         )
 
 
-@app.post("/sessions/{session_id}/meetings/{meeting_id}/complete")
-async def complete_meeting(
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/leave")
+async def leave_meeting(
     session_id: str,
     meeting_id: str,
     user_id: Optional[str] = Depends(optional_auth)
 ):
     """
-    Complete a meeting and award XP based on performance
+    Leave a meeting early
     
     Args:
         session_id: Unique session identifier
@@ -2067,7 +2363,166 @@ async def complete_meeting(
         user_id: Optional authenticated user ID
         
     Returns:
-        Meeting summary with overall score and XP gained
+        Partial meeting summary with reduced XP
+        
+    Raises:
+        HTTPException: If session or meeting not found
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        # Check if meeting is already completed
+        if meeting_data.get("status") == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Meeting has already been completed"
+            )
+        
+        logger.info(f"Player leaving meeting {meeting_id} early")
+        
+        # Calculate partial score
+        responses = meeting_data.get("responses", [])
+        total_score = 0
+        for response in responses:
+            evaluation = response.get("evaluation", {})
+            total_score += evaluation.get("score", 0)
+        
+        overall_score = total_score / len(responses) if responses else 0
+        
+        # Award reduced XP (50% of normal)
+        meeting_type = meeting_data.get("meeting_type", "one_on_one")
+        base_xp = {
+            "one_on_one": 20,
+            "team_meeting": 30,
+            "stakeholder_presentation": 50,
+            "performance_review": 40,
+            "project_update": 30,
+            "feedback_session": 25
+        }.get(meeting_type, 30)
+        
+        xp_multiplier = 0.5 + (overall_score / 100)
+        full_xp = int(base_xp * xp_multiplier)
+        partial_xp = int(full_xp * 0.5)  # 50% for early departure
+        
+        # Award partial XP
+        xp_result = firestore_manager.add_xp(session_id, partial_xp)
+        
+        # Update meeting status
+        firestore_manager.update_meeting(meeting_id, {
+            "status": "completed",
+            "overall_score": overall_score,
+            "xp_gained": partial_xp,
+            "completed_at": datetime.utcnow().isoformat(),
+            "early_departure": True
+        })
+        
+        # Track meeting stats (even for early departure)
+        meeting_performance = {
+            "meeting_id": meeting_id,
+            "meeting_type": meeting_type,
+            "score": overall_score,
+            "xp_gained": partial_xp,
+            "tasks_generated": 0,
+            "early_departure": True,
+            "date": datetime.utcnow().isoformat()
+        }
+        
+        meeting_history = session_data.get("meeting_history", [])
+        meeting_history.append(meeting_performance)
+        
+        # Update meeting statistics
+        stats = session_data.get("stats", {})
+        meetings_attended = stats.get("meetings_attended", 0) + 1
+        
+        # Calculate average meeting score
+        total_meeting_score = sum(m.get("score", 0) for m in meeting_history)
+        avg_meeting_score = int(total_meeting_score / len(meeting_history)) if meeting_history else 0
+        
+        stats["meetings_attended"] = meetings_attended
+        stats["avg_meeting_score"] = avg_meeting_score
+        
+        firestore_manager.update_session(session_id, {
+            "meeting_history": meeting_history,
+            "last_meeting_completed_at": datetime.utcnow().isoformat(),
+            "stats": stats
+        })
+        
+        logger.info(f"Meeting left early: partial_xp={partial_xp}, meetings_attended={meetings_attended}")
+        
+        return {
+            "success": True,
+            "early_departure": True,
+            "overall_score": overall_score,
+            "xp_gained": partial_xp,
+            "new_xp": xp_result["new_xp"],
+            "new_level": xp_result["new_level"],
+            "level_up": xp_result["leveled_up"],
+            "xp_to_next_level": xp_result["xp_to_next_level"],
+            "message": "You left the meeting early. Partial XP awarded."
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to leave meeting {meeting_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to leave meeting: {str(e)}"
+        )
+
+
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/complete")
+async def complete_meeting(
+    session_id: str,
+    meeting_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Complete a meeting, evaluate participation, generate outcomes, and award XP.
+    
+    This endpoint:
+    1. Evaluates player's meeting participation using Meeting Evaluation Agent
+    2. Determines if meeting should generate follow-up tasks
+    3. Generates 0-3 tasks based on meeting discussions (if applicable)
+    4. Awards XP for meeting participation
+    5. Creates meeting summary with decisions and action items
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Meeting summary with evaluation, generated tasks, XP, and feedback
         
     Raises:
         HTTPException: If session or meeting not found
@@ -2094,76 +2549,177 @@ async def complete_meeting(
         
         logger.info(f"Completing meeting {meeting_id} for session {session_id}")
         
-        # Calculate overall meeting score
-        responses = meeting_data.get("responses", [])
-        if not responses:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No responses recorded for this meeting"
-            )
+        # Add player level and job info to meeting data for evaluation
+        meeting_data['player_level'] = session_data.get('level', 1)
+        meeting_data['job_title'] = session_data.get('current_job', {}).get('position', 'Employee')
+        meeting_data['company_name'] = session_data.get('current_job', {}).get('company_name', 'Company')
+        meeting_data['tasks_completed'] = session_data.get('tasks_completed', 0)
         
-        total_score = 0
-        for response in responses:
-            evaluation = response.get("evaluation", {})
-            total_score += evaluation.get("score", 0)
+        # Step 1: Evaluate meeting participation using Meeting Evaluation Agent
+        logger.info(f"Evaluating meeting participation for {meeting_id}")
+        evaluation = await workflow_orchestrator.evaluate_meeting_participation(
+            session_id=session_id,
+            meeting_id=meeting_id,
+            meeting_data=meeting_data
+        )
         
-        overall_score = total_score / len(responses) if responses else 0
+        # Step 2: Generate meeting outcomes (tasks, XP, summary)
+        logger.info(f"Generating meeting outcomes for {meeting_id}")
+        outcomes = await workflow_orchestrator.generate_meeting_outcomes(
+            session_id=session_id,
+            meeting_id=meeting_id,
+            meeting_data=meeting_data,
+            evaluation=evaluation
+        )
         
-        # Award XP based on meeting performance
-        # Base XP: 20-50 depending on meeting type and performance
-        meeting_type = meeting_data.get("meeting_type", "one_on_one")
-        base_xp = {
-            "one_on_one": 20,
-            "team_meeting": 30,
-            "stakeholder_presentation": 50,
-            "performance_review": 40,
-            "project_update": 30,
-            "feedback_session": 25
-        }.get(meeting_type, 30)
-        
-        # Scale XP by performance (0.5x to 1.5x)
-        xp_multiplier = 0.5 + (overall_score / 100)
-        xp_gained = int(base_xp * xp_multiplier)
-        
-        # Award XP
+        # Step 3: Award XP for meeting participation
+        xp_gained = outcomes.get('xp_earned', 0)
         xp_result = firestore_manager.add_xp(session_id, xp_gained)
         
-        # Update meeting status
+        # Step 4: Save generated tasks to Firestore
+        generated_tasks = outcomes.get('generated_tasks', [])
+        task_ids = []
+        for task in generated_tasks:
+            task_id = firestore_manager.add_task(session_id, task)
+            task_ids.append(task_id)
+            logger.info(f"Generated task from meeting: {task_id} - {task.get('title')}")
+        
+        # Step 5: Update meeting status and save summary
         firestore_manager.update_meeting(meeting_id, {
             "status": "completed",
-            "overall_score": overall_score,
+            "participation_score": outcomes.get('participation_score', 0),
             "xp_gained": xp_gained,
             "completed_at": datetime.utcnow().isoformat()
         })
         
-        # Track meeting performance for career progression
+        # Save meeting summary to Firestore
+        summary_data = {
+            "xp_earned": xp_gained,
+            "participation_score": outcomes.get('participation_score', 0),
+            "generated_tasks": [
+                {
+                    "task_id": task_ids[i] if i < len(task_ids) else None,
+                    "title": task.get('title', ''),
+                    "source": "meeting"
+                }
+                for i, task in enumerate(generated_tasks)
+            ],
+            "key_decisions": outcomes.get('key_decisions', []),
+            "action_items": outcomes.get('action_items', []),
+            "feedback": outcomes.get('feedback', {})
+        }
+        
+        firestore_manager.create_meeting_summary(meeting_id, session_id, summary_data)
+        
+        # Step 6: Track meeting performance for career progression
         meeting_performance = {
             "meeting_id": meeting_id,
-            "meeting_type": meeting_type,
-            "score": overall_score,
+            "meeting_type": meeting_data.get("meeting_type", "one_on_one"),
+            "score": outcomes.get('participation_score', 0),
             "xp_gained": xp_gained,
+            "tasks_generated": len(generated_tasks),
             "date": datetime.utcnow().isoformat()
         }
         
         # Store in session for future reference
         meeting_history = session_data.get("meeting_history", [])
         meeting_history.append(meeting_performance)
-        firestore_manager.update_session(session_id, {"meeting_history": meeting_history})
         
-        logger.info(f"Meeting completed: score={overall_score}, xp_gained={xp_gained}")
+        # Update meeting statistics
+        stats = session_data.get("stats", {})
+        meetings_attended = stats.get("meetings_attended", 0) + 1
         
+        # Calculate average meeting score
+        total_meeting_score = sum(m.get("score", 0) for m in meeting_history)
+        avg_meeting_score = int(total_meeting_score / len(meeting_history)) if meeting_history else 0
+        
+        stats["meetings_attended"] = meetings_attended
+        stats["avg_meeting_score"] = avg_meeting_score
+        
+        firestore_manager.update_session(session_id, {
+            "meeting_history": meeting_history,
+            "last_meeting_completed_at": datetime.utcnow().isoformat(),
+            "stats": stats
+        })
+        
+        # Step 7: Update CV with meeting participation
+        # Periodically update CV with meeting accomplishments (every 3 meetings)
+        if meetings_attended % 3 == 0:
+            try:
+                current_cv = session_data.get("cv_data", {
+                    "experience": [],
+                    "skills": [],
+                    "accomplishments": []
+                })
+                
+                # Get recent meetings for CV update
+                recent_meetings = meeting_history[-3:] if len(meeting_history) >= 3 else meeting_history
+                
+                meeting_action_data = {
+                    "meetings": [
+                        {
+                            "meeting_type": m.get("meeting_type", ""),
+                            "title": meeting_data.get("title", "") if m.get("meeting_id") == meeting_id else f"{m.get('meeting_type', 'meeting').replace('_', ' ').title()}",
+                            "score": m.get("score", 0),
+                            "key_decisions": outcomes.get('key_decisions', []) if m.get("meeting_id") == meeting_id else [],
+                            "generated_tasks": m.get("tasks_generated", 0)
+                        }
+                        for m in recent_meetings
+                    ],
+                    "total_meetings": meetings_attended,
+                    "avg_score": avg_meeting_score
+                }
+                
+                # Update CV using CV Agent
+                updated_cv = await workflow_orchestrator.update_cv(
+                    session_id=session_id,
+                    current_cv=current_cv,
+                    action="add_meeting_participation",
+                    action_data=meeting_action_data
+                )
+                
+                # Save updated CV
+                firestore_manager.update_session(session_id, {
+                    "cv_data": updated_cv
+                })
+                
+                logger.info(f"Updated CV with meeting participation for session {session_id}")
+            except Exception as cv_error:
+                logger.error(f"Failed to update CV with meeting participation: {cv_error}")
+                # Continue even if CV update fails
+        
+        logger.info(
+            f"Meeting completed: score={outcomes.get('participation_score')}, "
+            f"xp_gained={xp_gained}, tasks_generated={len(generated_tasks)}"
+        )
+        
+        # Return comprehensive meeting summary
         return {
             "success": True,
-            "overall_score": overall_score,
+            "participation_score": outcomes.get('participation_score', 0),
             "xp_gained": xp_gained,
             "new_xp": xp_result["new_xp"],
             "new_level": xp_result["new_level"],
             "level_up": xp_result["leveled_up"],
             "xp_to_next_level": xp_result["xp_to_next_level"],
+            "generated_tasks": [
+                {
+                    "task_id": task_ids[i] if i < len(task_ids) else None,
+                    "title": task.get('title', ''),
+                    "description": task.get('description', ''),
+                    "xp_reward": task.get('xp_reward', 0),
+                    "difficulty": task.get('difficulty', 1)
+                }
+                for i, task in enumerate(generated_tasks)
+            ],
+            "key_decisions": outcomes.get('key_decisions', []),
+            "action_items": outcomes.get('action_items', []),
+            "feedback": outcomes.get('feedback', {}),
             "meeting_summary": {
-                "topics_discussed": len(responses),
-                "average_score": overall_score,
-                "feedback": "Great participation!" if overall_score >= 70 else "Good effort, keep improving!"
+                "meeting_type": meeting_data.get("meeting_type", ""),
+                "title": meeting_data.get("title", ""),
+                "topics_discussed": len(meeting_data.get("topics", [])),
+                "participation_level": evaluation.get('participation_level', 'satisfactory')
             }
         }
         
@@ -2186,6 +2742,137 @@ async def complete_meeting(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to complete meeting: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to complete meeting: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to complete meeting: {str(e)}"
+        )
+
+
+@app.get("/sessions/{session_id}/meetings/{meeting_id}/summary")
+async def get_meeting_summary(
+    session_id: str,
+    meeting_id: str,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get meeting summary after completion
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Meeting summary with outcomes, generated tasks, and evaluation
+        
+    Raises:
+        HTTPException: If session or meeting not found, or meeting not completed
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Retrieve meeting from Firestore
+        meeting_data = firestore_manager.get_meeting(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        # Check if meeting is completed
+        if meeting_data.get("status") != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Meeting has not been completed yet"
+            )
+        
+        # Try to get existing summary from Firestore
+        try:
+            summary = firestore_manager.get_meeting_summary(meeting_id)
+            return summary
+        except:
+            # Generate summary if it doesn't exist
+            pass
+        
+        # Generate summary from meeting data
+        responses = meeting_data.get("responses", [])
+        
+        # Extract key decisions and action items from responses
+        key_decisions = []
+        action_items = []
+        feedback_strengths = []
+        feedback_improvements = []
+        
+        for response in responses:
+            evaluation = response.get("evaluation", {})
+            if evaluation.get("score", 0) >= 70:
+                feedback_strengths.append(f"Good response to: {response.get('topic_id', 'topic')}")
+            else:
+                feedback_improvements.append(f"Could improve on: {response.get('topic_id', 'topic')}")
+        
+        # Create summary
+        summary = {
+            "meeting_id": meeting_id,
+            "session_id": session_id,
+            "meeting_type": meeting_data.get("meeting_type", ""),
+            "xp_earned": meeting_data.get("xp_gained", 0),
+            "participation_score": meeting_data.get("overall_score", 0),
+            "generated_tasks": [],  # Tasks would be generated separately
+            "key_decisions": key_decisions if key_decisions else ["Meeting objectives discussed"],
+            "action_items": action_items if action_items else ["Follow up on discussed topics"],
+            "feedback": {
+                "strengths": feedback_strengths if feedback_strengths else ["Active participation"],
+                "improvements": feedback_improvements if feedback_improvements else ["Continue engaging in discussions"]
+            },
+            "early_departure": meeting_data.get("early_departure", False),
+            "created_at": meeting_data.get("completed_at", datetime.utcnow().isoformat())
+        }
+        
+        # Save summary to Firestore
+        firestore_manager.create_meeting_summary(
+            meeting_id=meeting_id,
+            session_id=session_id,
+            xp_earned=summary["xp_earned"],
+            participation_score=summary["participation_score"],
+            generated_tasks=summary["generated_tasks"],
+            key_decisions=summary["key_decisions"],
+            action_items=summary["action_items"],
+            feedback=summary["feedback"]
+        )
+        
+        return summary
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get meeting summary for {meeting_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get meeting summary: {str(e)}"
         )
 
 

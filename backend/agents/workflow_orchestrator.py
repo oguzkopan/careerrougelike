@@ -980,12 +980,60 @@ Grading scale:
     
     async def update_cv(self, session_id: str, current_cv: Dict, action: str,
                        action_data: Dict) -> Dict[str, Any]:
-        """Update CV - placeholder."""
-        if action == "add_job":
-            if "experience" not in current_cv:
-                current_cv["experience"] = []
-            current_cv["experience"].append(action_data)
-        return current_cv
+        """
+        Update CV using the CV Agent.
+        
+        Args:
+            session_id: Session identifier
+            current_cv: Current CV data
+            action: Action to perform (add_job, update_accomplishments, add_skills, add_meeting_participation)
+            action_data: Data for the action
+            
+        Returns:
+            Updated CV data
+        """
+        logger.info(f"Updating CV for session {session_id}, action: {action}")
+        
+        try:
+            from agents.cv_agent import cv_agent
+            
+            # Prepare context for CV agent
+            context = {
+                "current_cv": json.dumps(current_cv, indent=2),
+                "action": action,
+                "action_data": json.dumps(action_data, indent=2)
+            }
+            
+            # Generate CV update using the agent
+            prompt = cv_agent.instruction.format(**context)
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                updated_cv = json.loads(json_match.group())
+                logger.info(f"CV updated successfully for action: {action}")
+                return updated_cv
+            else:
+                logger.warning("No JSON found in CV update response, returning current CV")
+                return current_cv
+                
+        except Exception as e:
+            logger.error(f"Failed to update CV: {e}")
+            # Fallback: simple update
+            if action == "add_job":
+                if "experience" not in current_cv:
+                    current_cv["experience"] = []
+                current_cv["experience"].append(action_data)
+            elif action == "add_meeting_participation":
+                # Add meeting stats to CV
+                if "stats" not in current_cv:
+                    current_cv["stats"] = {}
+                current_cv["stats"]["meetings_attended"] = action_data.get("total_meetings", 0)
+                current_cv["stats"]["avg_meeting_score"] = action_data.get("avg_score", 0)
+            
+            return current_cv
     
     async def grade_voice_answer(
         self,
@@ -1284,6 +1332,180 @@ Grading scale:
                 "feedback": f"Error processing voice task: {str(e)}",
                 "xp_gained": 0
             }
+
+    
+    async def should_trigger_meeting(
+        self,
+        session_id: str,
+        tasks_completed: int,
+        player_level: int,
+        recent_tasks: List[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if a meeting should be triggered based on task completion.
+        
+        Requirements:
+        - Trigger after completing 2-4 tasks
+        - Schedule 1-2 meetings per 5 tasks completed
+        - Vary meeting types to avoid repetition
+        - Scale frequency based on player level
+        
+        Args:
+            session_id: Player session ID
+            tasks_completed: Total number of tasks completed
+            player_level: Current player level
+            recent_tasks: List of recently completed tasks for context
+            
+        Returns:
+            Meeting trigger data if a meeting should be generated, None otherwise
+        """
+        import random
+        from shared.firestore_manager import FirestoreManager
+        
+        firestore = FirestoreManager()
+        
+        # Get meeting history to check frequency and avoid repetition
+        try:
+            session_data = firestore.get_session(session_id)
+            meeting_history = session_data.get("meeting_history", [])
+            last_meeting_trigger = session_data.get("last_meeting_trigger_at_task", 0)
+        except:
+            meeting_history = []
+            last_meeting_trigger = 0
+        
+        # Calculate tasks since last meeting
+        tasks_since_last_meeting = tasks_completed - last_meeting_trigger
+        
+        # Requirement: Trigger after completing 2-4 tasks
+        min_tasks_between_meetings = 2
+        max_tasks_between_meetings = 4
+        
+        # Scale frequency based on player level
+        # Higher level = more frequent meetings
+        if player_level >= 8:
+            # Senior level: more meetings
+            min_tasks_between_meetings = 2
+            max_tasks_between_meetings = 3
+        elif player_level >= 4:
+            # Mid level: moderate meetings
+            min_tasks_between_meetings = 2
+            max_tasks_between_meetings = 4
+        else:
+            # Entry level: fewer meetings
+            min_tasks_between_meetings = 3
+            max_tasks_between_meetings = 5
+        
+        # Check if enough tasks have been completed since last meeting
+        if tasks_since_last_meeting < min_tasks_between_meetings:
+            logger.info(f"Not enough tasks completed since last meeting: {tasks_since_last_meeting}/{min_tasks_between_meetings}")
+            return None
+        
+        # Requirement: Schedule 1-2 meetings per 5 tasks completed
+        # Calculate expected meetings based on total tasks
+        expected_meetings = (tasks_completed // 5) * random.randint(1, 2)
+        actual_meetings = len(meeting_history)
+        
+        # If we're behind on meetings, increase trigger chance
+        behind_on_meetings = actual_meetings < expected_meetings
+        
+        # Random trigger with higher chance if behind on meetings
+        if tasks_since_last_meeting >= max_tasks_between_meetings:
+            # Definitely trigger if max tasks reached
+            should_trigger = True
+        elif behind_on_meetings:
+            # 70% chance if behind on meetings
+            should_trigger = random.random() < 0.7
+        else:
+            # 40% chance otherwise
+            should_trigger = random.random() < 0.4
+        
+        if not should_trigger:
+            logger.info(f"Meeting trigger check: not triggered (tasks_since_last={tasks_since_last_meeting})")
+            return None
+        
+        # Determine meeting type with variation to avoid repetition
+        meeting_types = [
+            "one_on_one",
+            "team_meeting",
+            "project_update",
+            "feedback_session",
+            "stakeholder_presentation",
+            "performance_review"
+        ]
+        
+        # Get recent meeting types to avoid repetition
+        recent_meeting_types = [m.get("meeting_type") for m in meeting_history[-3:]]
+        
+        # Filter out recently used types
+        available_types = [mt for mt in meeting_types if mt not in recent_meeting_types]
+        if not available_types:
+            available_types = meeting_types  # Reset if all types used
+        
+        # Weight meeting types based on player level
+        if player_level <= 3:
+            # Entry level: more 1-on-1s and team meetings
+            weights = {
+                "one_on_one": 3,
+                "team_meeting": 3,
+                "project_update": 2,
+                "feedback_session": 2,
+                "stakeholder_presentation": 1,
+                "performance_review": 1
+            }
+        elif player_level <= 7:
+            # Mid level: balanced mix
+            weights = {
+                "one_on_one": 2,
+                "team_meeting": 2,
+                "project_update": 3,
+                "feedback_session": 2,
+                "stakeholder_presentation": 2,
+                "performance_review": 1
+            }
+        else:
+            # Senior level: more presentations and reviews
+            weights = {
+                "one_on_one": 2,
+                "team_meeting": 2,
+                "project_update": 2,
+                "feedback_session": 1,
+                "stakeholder_presentation": 3,
+                "performance_review": 2
+            }
+        
+        # Select meeting type based on weights
+        weighted_types = []
+        for mt in available_types:
+            weight = weights.get(mt, 1)
+            weighted_types.extend([mt] * weight)
+        
+        selected_meeting_type = random.choice(weighted_types)
+        
+        # Determine recent performance for meeting context
+        if recent_tasks:
+            # Calculate average score from recent tasks
+            scores = [t.get("score", 0) for t in recent_tasks if t.get("score") is not None]
+            if scores:
+                avg_score = sum(scores) / len(scores)
+                if avg_score >= 80:
+                    recent_performance = "excellent"
+                elif avg_score >= 60:
+                    recent_performance = "good"
+                else:
+                    recent_performance = "needs_improvement"
+            else:
+                recent_performance = "average"
+        else:
+            recent_performance = "average"
+        
+        logger.info(f"Meeting trigger: {selected_meeting_type} (tasks_since_last={tasks_since_last_meeting}, level={player_level})")
+        
+        return {
+            "meeting_type": selected_meeting_type,
+            "recent_performance": recent_performance,
+            "trigger_reason": "task_completion",
+            "tasks_completed": tasks_completed
+        }
 
 
     async def generate_meeting(
@@ -1798,6 +2020,678 @@ Make it realistic and appropriate for the player's level and performance."""
                 return None
         
         return None
+    
+    # ========== MEETING COORDINATION METHODS ==========
+    
+    async def generate_meeting_scenario(
+        self,
+        session_id: str,
+        trigger_reason: str,
+        job_title: str,
+        company_name: str,
+        player_level: int,
+        recent_tasks: List[Dict[str, Any]],
+        tasks_since_meeting: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Generate a meeting scenario using the Meeting Generator Agent.
+        
+        Args:
+            session_id: Player session ID
+            trigger_reason: Why the meeting is being generated (task_completion, scheduled, manager_request, milestone)
+            job_title: Player's current job title
+            company_name: Player's company name
+            player_level: Player's current level
+            recent_tasks: List of recently completed tasks
+            tasks_since_meeting: Number of tasks completed since last meeting
+        
+        Returns:
+            Meeting data dictionary with participants, topics, and metadata
+        """
+        logger.info(f"Generating meeting for session {session_id}, trigger: {trigger_reason}")
+        
+        try:
+            from agents.meeting_generator_agent import (
+                meeting_generator_agent,
+                post_process_meeting_data,
+                select_meeting_type_by_trigger,
+                format_recent_tasks_for_context
+            )
+            
+            # Select appropriate meeting type based on trigger
+            meeting_type = select_meeting_type_by_trigger(
+                trigger_reason,
+                player_level,
+                tasks_since_meeting
+            )
+            
+            # Format recent tasks for context
+            recent_tasks_str = format_recent_tasks_for_context(recent_tasks)
+            
+            # Prepare context for the agent
+            context = {
+                "job_title": job_title,
+                "company_name": company_name,
+                "player_level": player_level,
+                "recent_tasks": recent_tasks_str,
+                "trigger_reason": trigger_reason,
+                "tasks_since_meeting": tasks_since_meeting
+            }
+            
+            # Generate meeting using the agent
+            prompt = meeting_generator_agent.instruction.format(**context)
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                meeting_data = json.loads(json_match.group())
+                
+                # Post-process to ensure proper IDs and avatar colors
+                meeting_data = post_process_meeting_data(meeting_data)
+                
+                # Add session metadata
+                meeting_data['session_id'] = session_id
+                meeting_data['status'] = 'scheduled'
+                meeting_data['current_topic_index'] = 0
+                meeting_data['conversation_history'] = []
+                meeting_data['started_at'] = None
+                meeting_data['completed_at'] = None
+                
+                logger.info(f"Successfully generated {meeting_data.get('meeting_type')} meeting: {meeting_data.get('title')}")
+                return meeting_data
+            else:
+                logger.error("No JSON found in meeting generation response")
+                raise ValueError("Invalid meeting generation response")
+                
+        except Exception as e:
+            logger.error(f"Failed to generate meeting: {e}")
+            # Return a fallback meeting
+            return self._generate_fallback_meeting(
+                session_id,
+                job_title,
+                company_name,
+                player_level
+            )
+    
+    async def process_meeting_turn(
+        self,
+        session_id: str,
+        meeting_id: str,
+        meeting_data: Dict[str, Any],
+        stage: str,
+        player_response: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Process a meeting conversation turn (AI discussion or response to player).
+        
+        Args:
+            session_id: Player session ID
+            meeting_id: Meeting ID
+            meeting_data: Current meeting data
+            stage: "initial_discussion" or "response_to_player"
+            player_response: Player's response (required for response_to_player stage)
+        
+        Returns:
+            Dictionary with AI messages, completion status, and next state
+        """
+        logger.info(f"Processing meeting turn for {meeting_id}, stage: {stage}")
+        
+        try:
+            from agents.meeting_conversation_agent import (
+                meeting_conversation_agent,
+                format_participants_for_context,
+                format_conversation_history,
+                format_topic_for_context,
+                post_process_conversation_messages,
+                validate_conversation_messages,
+                create_player_turn_prompt,
+                determine_message_count
+            )
+            from agents.meeting_completion_agent import (
+                meeting_completion_agent,
+                extract_topic_conversation,
+                count_player_contributions,
+                format_topic_conversation_for_context,
+                format_current_topic_for_context,
+                calculate_time_elapsed,
+                post_process_completion_decision
+            )
+            
+            # Get current topic
+            current_topic_index = meeting_data.get('current_topic_index', 0)
+            topics = meeting_data.get('topics', [])
+            
+            if current_topic_index >= len(topics):
+                logger.error(f"Invalid topic index: {current_topic_index}")
+                return {
+                    "error": "Invalid topic index",
+                    "meeting_complete": True
+                }
+            
+            current_topic = topics[current_topic_index]
+            participants = meeting_data.get('participants', [])
+            conversation_history = meeting_data.get('conversation_history', [])
+            
+            # Determine number of messages to generate
+            num_messages = determine_message_count(stage, conversation_history, len(participants))
+            
+            # Prepare context for conversation agent
+            context = {
+                "meeting_type": meeting_data.get('meeting_type', ''),
+                "meeting_context": meeting_data.get('context', ''),
+                "current_topic": current_topic.get('question', ''),
+                "topic_context": current_topic.get('context', ''),
+                "participants": format_participants_for_context(participants),
+                "conversation_history": format_conversation_history(conversation_history),
+                "stage": stage,
+                "player_response": player_response or ""
+            }
+            
+            # Generate AI conversation
+            prompt = meeting_conversation_agent.instruction.format(**context)
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON from response
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                ai_messages = json.loads(json_match.group())
+                
+                # Post-process messages
+                ai_messages = post_process_conversation_messages(ai_messages, participants)
+                
+                # Validate messages
+                if not validate_conversation_messages(ai_messages):
+                    logger.warning("Generated messages failed validation")
+                    ai_messages = self._generate_fallback_messages(participants, stage)
+                
+                logger.info(f"Generated {len(ai_messages)} AI messages")
+            else:
+                logger.warning("No JSON found in conversation response")
+                ai_messages = self._generate_fallback_messages(participants, stage)
+            
+            # Check if topic/meeting is complete
+            topic_conversation = extract_topic_conversation(conversation_history, current_topic_index)
+            player_contributions = count_player_contributions(topic_conversation)
+            time_elapsed = calculate_time_elapsed(
+                meeting_data.get('started_at', datetime.utcnow().isoformat())
+            )
+            topics_remaining = len(topics) - current_topic_index - 1
+            
+            # Prepare context for completion agent
+            completion_context = {
+                "meeting_type": meeting_data.get('meeting_type', ''),
+                "meeting_objective": meeting_data.get('objective', ''),
+                "current_topic": current_topic.get('question', ''),
+                "topic_context": current_topic.get('context', ''),
+                "topic_conversation_history": format_topic_conversation_for_context(topic_conversation),
+                "topics_remaining": topics_remaining,
+                "time_elapsed_minutes": time_elapsed,
+                "total_topics": len(topics),
+                "current_topic_index": current_topic_index
+            }
+            
+            # Check completion
+            completion_prompt = meeting_completion_agent.instruction.format(**completion_context)
+            completion_response = self.model.generate_content(completion_prompt)
+            completion_text = completion_response.text
+            
+            # Extract completion decision
+            json_match = re.search(r'\{.*\}', completion_text, re.DOTALL)
+            if json_match:
+                completion_decision = json.loads(json_match.group())
+                completion_decision = post_process_completion_decision(
+                    completion_decision,
+                    meeting_data.get('meeting_type', ''),
+                    time_elapsed,
+                    topics_remaining
+                )
+            else:
+                logger.warning("No JSON found in completion response")
+                completion_decision = {
+                    "topic_complete": player_contributions >= 2,
+                    "meeting_complete": topics_remaining == 0,
+                    "reason": "Default completion check",
+                    "transition_message": "Let's continue."
+                }
+            
+            # Build response
+            result = {
+                "ai_messages": ai_messages,
+                "topic_complete": completion_decision.get('topic_complete', False),
+                "meeting_complete": completion_decision.get('meeting_complete', False),
+                "transition_message": completion_decision.get('transition_message', ''),
+                "is_player_turn": stage == "initial_discussion" or not completion_decision.get('topic_complete', False)
+            }
+            
+            # If topic complete but meeting not complete, move to next topic
+            if completion_decision.get('topic_complete') and not completion_decision.get('meeting_complete'):
+                result['next_topic_index'] = current_topic_index + 1
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to process meeting turn: {e}")
+            return {
+                "error": str(e),
+                "ai_messages": [],
+                "meeting_complete": False,
+                "is_player_turn": True
+            }
+    
+    async def evaluate_meeting_participation(
+        self,
+        session_id: str,
+        meeting_id: str,
+        meeting_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Evaluate player's meeting participation and generate feedback.
+        
+        Args:
+            session_id: Player session ID
+            meeting_id: Meeting ID
+            meeting_data: Complete meeting data with conversation history
+        
+        Returns:
+            Evaluation result with score, XP, feedback, and task generation decision
+        """
+        logger.info(f"Evaluating meeting participation for {meeting_id}")
+        
+        try:
+            from agents.meeting_evaluation_agent import (
+                meeting_evaluation_agent,
+                format_player_responses_for_context,
+                format_ai_reactions_for_context,
+                format_topics_for_context,
+                post_process_evaluation_result,
+                validate_evaluation_result,
+                create_default_evaluation
+            )
+            
+            # Extract player responses and AI reactions
+            conversation_history = meeting_data.get('conversation_history', [])
+            player_responses = [
+                msg for msg in conversation_history
+                if msg.get('type') == 'player_response'
+            ]
+            ai_responses = [
+                msg for msg in conversation_history
+                if msg.get('type') == 'ai_response'
+            ]
+            
+            topics = meeting_data.get('topics', [])
+            player_level = meeting_data.get('player_level', 1)
+            
+            # Prepare context for evaluation agent
+            context = {
+                "meeting_type": meeting_data.get('meeting_type', ''),
+                "meeting_objective": meeting_data.get('objective', ''),
+                "topics": format_topics_for_context(topics),
+                "player_responses": format_player_responses_for_context(player_responses, topics),
+                "ai_reactions": format_ai_reactions_for_context(ai_responses, player_responses),
+                "player_level": player_level,
+                "company_context": f"{meeting_data.get('company_name', '')} - {meeting_data.get('job_title', '')}"
+            }
+            
+            # Generate evaluation
+            prompt = meeting_evaluation_agent.instruction.format(**context)
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                evaluation = json.loads(json_match.group())
+                
+                # Post-process evaluation
+                evaluation = post_process_evaluation_result(
+                    evaluation,
+                    meeting_data.get('meeting_type', ''),
+                    player_level
+                )
+                
+                # Validate evaluation
+                if not validate_evaluation_result(evaluation):
+                    logger.warning("Generated evaluation failed validation")
+                    evaluation = create_default_evaluation(
+                        meeting_data.get('meeting_type', ''),
+                        player_level,
+                        "Validation failed"
+                    )
+                
+                logger.info(f"Meeting evaluated: score={evaluation.get('score')}, xp={evaluation.get('xp_earned')}")
+                return evaluation
+            else:
+                logger.warning("No JSON found in evaluation response")
+                return create_default_evaluation(
+                    meeting_data.get('meeting_type', ''),
+                    player_level,
+                    "No JSON response"
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to evaluate meeting: {e}")
+            return create_default_evaluation(
+                meeting_data.get('meeting_type', ''),
+                meeting_data.get('player_level', 1),
+                f"Error: {str(e)}"
+            )
+    
+    async def generate_meeting_outcomes(
+        self,
+        session_id: str,
+        meeting_id: str,
+        meeting_data: Dict[str, Any],
+        evaluation: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Generate meeting outcomes including follow-up tasks and XP awards.
+        
+        Args:
+            session_id: Player session ID
+            meeting_id: Meeting ID
+            meeting_data: Complete meeting data
+            evaluation: Meeting evaluation result
+        
+        Returns:
+            Dictionary with generated tasks, XP awarded, and meeting summary
+        """
+        logger.info(f"Generating outcomes for meeting {meeting_id}")
+        
+        try:
+            generated_tasks = []
+            
+            # Generate tasks if evaluation indicates we should
+            if evaluation.get('should_generate_tasks', False):
+                task_context = evaluation.get('task_generation_context', '')
+                
+                # Generate 1-2 tasks based on meeting discussion
+                num_tasks = 2 if evaluation.get('score', 0) >= 80 else 1
+                
+                for i in range(num_tasks):
+                    task = await self.generate_task(
+                        session_id=session_id,
+                        job_title=meeting_data.get('job_title', ''),
+                        company_name=meeting_data.get('company_name', ''),
+                        player_level=meeting_data.get('player_level', 1),
+                        tasks_completed=meeting_data.get('tasks_completed', 0) + i
+                    )
+                    
+                    # Add meeting context to task
+                    task['source'] = 'meeting'
+                    task['source_meeting_id'] = meeting_id
+                    task['description'] = f"[From meeting: {meeting_data.get('title')}] {task.get('description', '')}"
+                    
+                    generated_tasks.append(task)
+                    logger.info(f"Generated task from meeting: {task.get('title')}")
+            
+            # Extract key decisions and action items from conversation
+            conversation_history = meeting_data.get('conversation_history', [])
+            key_decisions = self._extract_key_decisions(conversation_history)
+            action_items = self._extract_action_items(conversation_history, generated_tasks)
+            
+            # Build outcomes
+            outcomes = {
+                "meeting_id": meeting_id,
+                "xp_earned": evaluation.get('xp_earned', 0),
+                "participation_score": evaluation.get('score', 0),
+                "generated_tasks": generated_tasks,
+                "key_decisions": key_decisions,
+                "action_items": action_items,
+                "feedback": {
+                    "strengths": evaluation.get('strengths', []),
+                    "improvements": evaluation.get('improvements', []),
+                    "summary": evaluation.get('evaluation_summary', '')
+                }
+            }
+            
+            logger.info(f"Meeting outcomes generated: {len(generated_tasks)} tasks, {outcomes['xp_earned']} XP")
+            return outcomes
+            
+        except Exception as e:
+            logger.error(f"Failed to generate meeting outcomes: {e}")
+            return {
+                "meeting_id": meeting_id,
+                "xp_earned": evaluation.get('xp_earned', 0),
+                "participation_score": evaluation.get('score', 0),
+                "generated_tasks": [],
+                "key_decisions": [],
+                "action_items": [],
+                "feedback": {
+                    "strengths": evaluation.get('strengths', []),
+                    "improvements": evaluation.get('improvements', []),
+                    "summary": evaluation.get('evaluation_summary', '')
+                }
+            }
+    
+    def _generate_fallback_meeting(
+        self,
+        session_id: str,
+        job_title: str,
+        company_name: str,
+        player_level: int
+    ) -> Dict[str, Any]:
+        """Generate a simple fallback meeting when AI generation fails."""
+        import uuid
+        
+        return {
+            "id": f"meeting-{uuid.uuid4().hex[:12]}",
+            "session_id": session_id,
+            "meeting_type": "one_on_one",
+            "title": "Check-in with Manager",
+            "context": f"A quick check-in to discuss your progress at {company_name}.",
+            "participants": [
+                {
+                    "id": f"participant-{uuid.uuid4().hex[:8]}",
+                    "name": "Alex Manager",
+                    "role": "Manager",
+                    "personality": "supportive",
+                    "avatar_color": "#3B82F6"
+                }
+            ],
+            "topics": [
+                {
+                    "id": f"topic-{uuid.uuid4().hex[:8]}",
+                    "question": "How is your current work progressing?",
+                    "context": "Regular check-in on work status",
+                    "expected_points": ["Progress update", "Challenges", "Next steps"],
+                    "ai_discussion_prompts": ["Ask about recent accomplishments", "Discuss any blockers"]
+                }
+            ],
+            "objective": "Align on current work and provide support",
+            "estimated_duration_minutes": 15,
+            "priority": "recommended",
+            "status": "scheduled",
+            "current_topic_index": 0,
+            "conversation_history": [],
+            "started_at": None,
+            "completed_at": None
+        }
+    
+    def _extract_key_decisions(
+        self,
+        conversation_history: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Extract key decisions from meeting conversation history.
+        
+        Args:
+            conversation_history: List of conversation messages
+        
+        Returns:
+            List of key decision strings
+        """
+        key_decisions = []
+        
+        # Look for messages that indicate decisions
+        decision_keywords = [
+            'decided', 'agreed', 'will', 'going to', 'plan to',
+            'commit', 'approve', 'move forward', 'prioritize'
+        ]
+        
+        for msg in conversation_history:
+            content = msg.get('content', '').lower()
+            
+            # Check if message contains decision keywords
+            if any(keyword in content for keyword in decision_keywords):
+                # Extract the decision (first sentence or first 150 chars)
+                decision_text = msg.get('content', '')
+                if '.' in decision_text:
+                    decision_text = decision_text.split('.')[0] + '.'
+                else:
+                    decision_text = decision_text[:150] + '...' if len(decision_text) > 150 else decision_text
+                
+                key_decisions.append(decision_text)
+        
+        # Limit to top 3-5 decisions
+        return key_decisions[:5]
+    
+    def _extract_action_items(
+        self,
+        conversation_history: List[Dict[str, Any]],
+        generated_tasks: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Extract action items from meeting conversation and generated tasks.
+        
+        Args:
+            conversation_history: List of conversation messages
+            generated_tasks: List of tasks generated from the meeting
+        
+        Returns:
+            List of action item strings
+        """
+        action_items = []
+        
+        # Add generated tasks as action items
+        for task in generated_tasks:
+            task_title = task.get('title', '')
+            action_items.append(f"You: {task_title}")
+        
+        # Look for action-oriented messages
+        action_keywords = [
+            'need to', 'should', 'must', 'action item', 'follow up',
+            'complete', 'deliver', 'prepare', 'review', 'submit'
+        ]
+        
+        for msg in conversation_history:
+            content = msg.get('content', '').lower()
+            msg_type = msg.get('type', '')
+            
+            # Check AI responses for action items directed at player
+            if msg_type == 'ai_response' and any(keyword in content for keyword in action_keywords):
+                # Extract the action (first sentence or first 150 chars)
+                action_text = msg.get('content', '')
+                participant_name = msg.get('participant_name', 'Team')
+                
+                if '.' in action_text:
+                    action_text = action_text.split('.')[0] + '.'
+                else:
+                    action_text = action_text[:150] + '...' if len(action_text) > 150 else action_text
+                
+                # Format as action item
+                action_items.append(f"{participant_name}: {action_text}")
+        
+        # Limit to top 5 action items
+        return action_items[:5]
+    
+    def _generate_fallback_messages(
+        self,
+        participants: List[Dict[str, Any]],
+        stage: str
+    ) -> List[Dict[str, Any]]:
+        """Generate simple fallback messages when AI generation fails."""
+        import uuid
+        from datetime import datetime
+        
+        if not participants:
+            return []
+        
+        participant = participants[0]
+        
+        if stage == "initial_discussion":
+            return [
+                {
+                    "id": f"msg-{uuid.uuid4().hex[:8]}",
+                    "type": "ai_response",
+                    "participant_id": participant['id'],
+                    "participant_name": participant['name'],
+                    "participant_role": participant['role'],
+                    "content": "Let's discuss this topic. What are your thoughts?",
+                    "sentiment": "neutral",
+                    "references_player": False,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            ]
+        else:  # response_to_player
+            return [
+                {
+                    "id": f"msg-{uuid.uuid4().hex[:8]}",
+                    "type": "ai_response",
+                    "participant_id": participant['id'],
+                    "participant_name": participant['name'],
+                    "participant_role": participant['role'],
+                    "content": "Thank you for sharing that perspective.",
+                    "sentiment": "positive",
+                    "references_player": True,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            ]
+    
+    def _extract_key_decisions(
+        self,
+        conversation_history: List[Dict[str, Any]]
+    ) -> List[str]:
+        """Extract key decisions from meeting conversation."""
+        # Simple extraction - look for decision-related keywords
+        decisions = []
+        decision_keywords = ['decided', 'agreed', 'will', 'going to', 'plan to', 'commit']
+        
+        for msg in conversation_history:
+            if msg.get('type') in ['ai_response', 'player_response']:
+                content = msg.get('content', '').lower()
+                if any(keyword in content for keyword in decision_keywords):
+                    # Extract the sentence containing the decision
+                    sentences = msg.get('content', '').split('.')
+                    for sentence in sentences:
+                        if any(keyword in sentence.lower() for keyword in decision_keywords):
+                            decisions.append(sentence.strip())
+                            break
+        
+        # Return up to 3 key decisions
+        return decisions[:3] if decisions else ["Meeting completed successfully"]
+    
+    def _extract_action_items(
+        self,
+        conversation_history: List[Dict[str, Any]],
+        generated_tasks: List[Dict[str, Any]]
+    ) -> List[str]:
+        """Extract action items from meeting conversation and generated tasks."""
+        action_items = []
+        
+        # Add generated tasks as action items
+        for task in generated_tasks:
+            action_items.append(f"You: {task.get('title', 'Complete assigned task')}")
+        
+        # Extract action-related statements from conversation
+        action_keywords = ['need to', 'should', 'must', 'will', 'action item', 'follow up']
+        
+        for msg in conversation_history:
+            if msg.get('type') in ['ai_response', 'player_response']:
+                content = msg.get('content', '').lower()
+                if any(keyword in content for keyword in action_keywords):
+                    sentences = msg.get('content', '').split('.')
+                    for sentence in sentences:
+                        if any(keyword in sentence.lower() for keyword in action_keywords):
+                            speaker = msg.get('participant_name', 'You') if msg.get('type') == 'ai_response' else 'You'
+                            action_items.append(f"{speaker}: {sentence.strip()}")
+                            break
+        
+        # Return up to 5 action items
+        return action_items[:5] if action_items else ["No specific action items identified"]
 
 
 __all__ = ["WorkflowOrchestrator"]

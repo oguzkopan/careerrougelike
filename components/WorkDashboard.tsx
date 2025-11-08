@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import StatsPanel from './StatsPanel';
 import TaskPanel from './TaskPanel';
 import TaskDetailModal from './TaskDetailModal';
+import MeetingsSection from './MeetingsSection';
+import MeetingSummaryModal from './MeetingSummaryModal';
 import Button from './shared/Button';
 import ResetButton from './shared/ResetButton';
 import AgentFallback from './AgentFallback';
 import { Briefcase, Calendar, DollarSign, Search, FileText } from 'lucide-react';
-import { WorkTask } from '../types';
-import { useTasks, usePlayerState, SessionExpiredError } from '../services/backendApiService';
+import { WorkTask, Meeting, MeetingSummary } from '../types';
+import { useTasks, usePlayerState, useMeetings, joinMeeting, SessionExpiredError } from '../services/backendApiService';
 import { useToast } from './shared/Toast';
 import LoadingSpinner from './shared/LoadingSpinner';
 
@@ -25,9 +27,11 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
   onReset,
 }) => {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
+  const [meetingSummary, setMeetingSummary] = useState<MeetingSummary | null>(null);
   const { showToast } = useToast();
 
-  // Fetch player state and tasks
+  // Fetch player state, tasks, and meetings
   const { 
     data: playerState, 
     isLoading: isLoadingState,
@@ -43,6 +47,12 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     error: tasksError,
     refetch: refetchTasks,
   } = useTasks(sessionId);
+  const {
+    meetings,
+    isLoading: isLoadingMeetings,
+    error: meetingsError,
+    refetch: refetchMeetings,
+  } = useMeetings(sessionId);
 
   // Auto-refresh when job is not ready (polling mechanism)
   React.useEffect(() => {
@@ -99,9 +109,54 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     }
   };
 
+  const handleJoinMeeting = async (meetingId: string) => {
+    try {
+      await joinMeeting(sessionId, meetingId);
+      setActiveMeetingId(meetingId);
+      refetchMeetings();
+    } catch (error) {
+      showToast('Failed to join meeting. Please try again.', 'error');
+      console.error('Meeting join error:', error);
+    }
+  };
+
+  const handleEndMeeting = () => {
+    setActiveMeetingId(null);
+    refetchMeetings();
+    refetchTasks(); // Refresh tasks in case meeting generated new tasks
+    refetchState(); // Refresh state for XP updates
+  };
+
+  const handleLeaveMeeting = (summary: any) => {
+    // Convert the leave meeting response to MeetingSummary format
+    const partialSummary: MeetingSummary = {
+      meetingId: activeMeetingId || '',
+      xpGained: summary.xp_gained || summary.xpGained || 0,
+      overallScore: summary.overall_score || summary.overallScore || 0,
+      feedback: {
+        strengths: summary.strengths || [],
+        improvements: summary.improvements || [],
+      },
+      generatedTasks: summary.generated_tasks || summary.generatedTasks || [],
+      keyDecisions: summary.key_decisions || summary.keyDecisions || [],
+      actionItems: summary.action_items || summary.actionItems || [],
+      earlyDeparture: summary.early_departure || summary.earlyDeparture || true,
+    };
+
+    setMeetingSummary(partialSummary);
+    setActiveMeetingId(null);
+    refetchMeetings();
+    refetchTasks();
+    refetchState();
+  };
+
+  const handleCloseMeetingSummary = () => {
+    setMeetingSummary(null);
+  };
+
   // Handle errors
-  if (stateError || tasksError) {
-    const error = stateError || tasksError;
+  if (stateError || tasksError || meetingsError) {
+    const error = stateError || tasksError || meetingsError;
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center p-4">
         <div className="max-w-2xl w-full">
@@ -113,6 +168,7 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
             onRetry={() => {
               refetchState();
               refetchTasks();
+              refetchMeetings();
             }}
             onCancel={error instanceof SessionExpiredError ? 
               () => window.location.href = '/' : 
@@ -123,7 +179,7 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     );
   }
 
-  if (isLoadingState || isLoadingTasks) {
+  if (isLoadingState || isLoadingTasks || isLoadingMeetings) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center">
         <LoadingSpinner />
@@ -263,25 +319,58 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
 
       {/* Main Content Area */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Meeting Notification Banner - Placeholder for future implementation */}
-        {/* This will be populated when event checking is integrated */}
-        
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Left Sidebar - Stats Panel */}
-          <aside className="lg:col-span-1">
-            <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden sticky top-6">
-              <StatsPanel playerStats={playerStats} />
-            </div>
-          </aside>
+        {/* If in active meeting, show placeholder (MeetingView will be integrated in task 16) */}
+        {activeMeetingId ? (
+          <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-8 text-center">
+            <Calendar className="w-16 h-16 text-purple-400 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-white mb-2">Meeting View</h2>
+            <p className="text-gray-400 mb-6">
+              Meeting ID: {activeMeetingId}
+            </p>
+            <p className="text-gray-500 mb-6">
+              Full meeting view will be integrated in the next task.
+            </p>
+            <Button onClick={handleEndMeeting}>
+              Return to Dashboard
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* Left Sidebar - Stats Panel */}
+            <aside className="lg:col-span-3">
+              <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden sticky top-6">
+                <StatsPanel playerStats={playerStats} />
+              </div>
+            </aside>
 
-          {/* Main Area - Task Panel */}
-          <main className="lg:col-span-3">
-            <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-6">
-              <h2 className="text-xl font-bold text-white mb-6">Active Tasks</h2>
-              <TaskPanel tasks={tasks} onSelectTask={handleSelectTask} />
-            </div>
-          </main>
-        </div>
+            {/* Main Content - Two Column Layout for Meetings and Tasks */}
+            <main className="lg:col-span-9">
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                {/* Meetings Section */}
+                <div className="bg-gradient-to-br from-purple-900/20 to-blue-900/20 rounded-lg border border-purple-700/50 p-6">
+                  <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                    <Calendar className="w-6 h-6 text-purple-400" />
+                    Meetings
+                  </h2>
+                  <MeetingsSection
+                    meetings={meetings || []}
+                    onJoinMeeting={handleJoinMeeting}
+                    isLoading={isLoadingMeetings}
+                  />
+                </div>
+
+                {/* Tasks Section */}
+                <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-6">
+                  <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                    <Briefcase className="w-6 h-6 text-indigo-400" />
+                    Active Tasks
+                  </h2>
+                  <TaskPanel tasks={tasks} onSelectTask={handleSelectTask} />
+                </div>
+              </div>
+            </main>
+          </div>
+        )}
       </div>
 
       {/* Task Detail Modal */}
@@ -292,6 +381,14 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
           onSubmit={handleSubmitTask}
           isSubmitting={isSubmitting}
           submitResult={submitResult}
+        />
+      )}
+
+      {/* Meeting Summary Modal */}
+      {meetingSummary && (
+        <MeetingSummaryModal
+          summary={meetingSummary}
+          onClose={handleCloseMeetingSummary}
         />
       )}
     </div>

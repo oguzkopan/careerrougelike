@@ -1,0 +1,445 @@
+/* Meeting-Specific Styles and Animations */
+
+/* Purple/Blue Gradient Backgrounds for Meetings Section */
+.meeting-section-gradient {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #4c51bf 100%);
+}
+
+.meeting-section-bg {
+  background: linear-gradient(to bottom right, 
+    rgba(102, 126, 234, 0.1) 0%, 
+    rgba(118, 75, 162, 0.05) 50%, 
+    rgba(76, 81, 191, 0.1) 100%
+  );
+}
+
+.meeting-card-gradient {
+  background: linear-gradient(135deg, 
+    rgba(139, 92, 246, 0.1) 0%, 
+    rgba(99, 102, 241, 0.1) 100%
+  );
+}
+
+.meeting-header-gradient {
+  background: linear-gradient(to bottom, 
+    rgba(139, 92, 246, 0.2) 0%, 
+    transparent 100%
+  );
+}
+
+/* Participant Avatar Animations */
+.participant-avatar {
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.participant-avatar:hover {
+  transform: scale(1.1) translateY(-2px);
+  box-shadow: 0 8px 16px rgba(139, 92, 246, 0.3);
+}
+
+.participant-avatar::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: -1;
+}
+
+.participant-avatar:hover::before {
+  opacity: 0.5;
+}
+
+/* Participant Avatar Pulse Animation for Active Speaker */
+.participant-avatar-active {
+  animation: avatar-pulse 2s ease-in-out infinite;
+}
+
+@keyframes avatar-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(139, 92, 246, 0);
+  }
+}
+
+/* Message Bubble Animations */
+.message-bubble-enter {
+  animation: message-slide-in 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes message-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.message-bubble-ai {
+  animation: message-slide-in-left 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes message-slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.message-bubble-player {
+  animation: message-slide-in-right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes message-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+/* Topic Introduction Animation */
+.topic-intro-animation {
+  animation: topic-reveal 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes topic-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Enhanced Typing Indicator Animation */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  animation: typing-bounce 1.4s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(1) {
+  animation-delay: 0ms;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 200ms;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 400ms;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.7;
+  }
+  30% {
+    transform: translateY(-10px);
+    opacity: 1;
+  }
+}
+
+/* Meeting Completion Celebration Animation */
+.meeting-complete-celebration {
+  animation: celebration-bounce 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+@keyframes celebration-bounce {
+  0% {
+    transform: scale(0.5) rotate(-5deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1) rotate(2deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+.celebration-confetti {
+  position: relative;
+  overflow: hidden;
+}
+
+.celebration-confetti::before,
+.celebration-confetti::after {
+  content: '🎉';
+  position: absolute;
+  font-size: 2rem;
+  animation: confetti-fall 3s ease-out infinite;
+}
+
+.celebration-confetti::before {
+  left: 20%;
+  animation-delay: 0s;
+}
+
+.celebration-confetti::after {
+  right: 20%;
+  animation-delay: 0.5s;
+}
+
+@keyframes confetti-fall {
+  0% {
+    top: -10%;
+    transform: rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    transform: rotate(360deg);
+    opacity: 0;
+  }
+}
+
+/* Meeting Card Hover Effects */
+.meeting-card {
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.meeting-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, 
+    transparent, 
+    rgba(139, 92, 246, 0.1), 
+    transparent
+  );
+  transition: left 0.5s ease;
+}
+
+.meeting-card:hover::before {
+  left: 100%;
+}
+
+.meeting-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 24px rgba(139, 92, 246, 0.2);
+}
+
+/* Meeting Status Indicators */
+.status-indicator {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-indicator-scheduled {
+  background: #8b5cf6;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.6);
+}
+
+.status-indicator-in-progress {
+  background: #3b82f6;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(59, 130, 246, 1);
+  }
+}
+
+.status-indicator-completed {
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+}
+
+/* Progress Bar Animation */
+.meeting-progress-bar {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(90deg, #8b5cf6, #6366f1, #ec4899);
+  background-size: 200% 100%;
+  animation: progress-shimmer 2s linear infinite;
+}
+
+@keyframes progress-shimmer {
+  0% {
+    background-position: 0% 0%;
+  }
+  100% {
+    background-position: 200% 0%;
+  }
+}
+
+/* Your Turn Indicator Animation */
+.your-turn-indicator {
+  animation: your-turn-pulse 2s ease-in-out infinite;
+}
+
+@keyframes your-turn-pulse {
+  0%, 100% {
+    background-color: rgba(99, 102, 241, 0.1);
+    border-color: rgba(99, 102, 241, 0.5);
+  }
+  50% {
+    background-color: rgba(99, 102, 241, 0.2);
+    border-color: rgba(99, 102, 241, 0.8);
+  }
+}
+
+/* Sentiment Badge Animations */
+.sentiment-badge {
+  display: inline-block;
+  animation: badge-appear 0.3s ease-out;
+}
+
+@keyframes badge-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Meeting Card Priority Badge Glow */
+.priority-badge-required {
+  animation: priority-glow-red 2s ease-in-out infinite;
+}
+
+@keyframes priority-glow-red {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(239, 68, 68, 0.8);
+  }
+}
+
+.priority-badge-recommended {
+  animation: priority-glow-yellow 2s ease-in-out infinite;
+}
+
+@keyframes priority-glow-yellow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.8);
+  }
+}
+
+/* Participant List Stagger Animation */
+.participant-list-item {
+  animation: participant-fade-in 0.4s ease-out backwards;
+}
+
+.participant-list-item:nth-child(1) { animation-delay: 0.1s; }
+.participant-list-item:nth-child(2) { animation-delay: 0.2s; }
+.participant-list-item:nth-child(3) { animation-delay: 0.3s; }
+.participant-list-item:nth-child(4) { animation-delay: 0.4s; }
+.participant-list-item:nth-child(5) { animation-delay: 0.5s; }
+
+@keyframes participant-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Meeting View Backdrop Blur Effect */
+.meeting-view-backdrop {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Smooth Scroll Behavior for Conversation */
+.conversation-scroll {
+  scroll-behavior: smooth;
+}
+
+/* Meeting Card Distinct Styling (vs Task Cards) */
+.meeting-card-distinct {
+  border-left: 4px solid;
+  border-image: linear-gradient(to bottom, #8b5cf6, #6366f1) 1;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+  .meeting-card:hover {
+    transform: translateY(-2px);
+  }
+  
+  .participant-avatar:hover {
+    transform: scale(1.05);
+  }
+}
+
+/* Accessibility: Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  .message-bubble-enter,
+  .message-bubble-ai,
+  .message-bubble-player,
+  .topic-intro-animation,
+  .meeting-complete-celebration,
+  .participant-list-item {
+    animation: none;
+  }
+  
+  .typing-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+  
+  .meeting-card:hover,
+  .participant-avatar:hover {
+    transform: none;
+  }
+  
+  .status-indicator-in-progress,
+  .your-turn-indicator,
+  .priority-badge-required,
+  .priority-badge-recommended {
+    animation: none;
+  }
+}

@@ -36,6 +36,11 @@ Actions:
    - Avoid duplicates
    - Data: {{"demonstrated_skills": ["...", "..."]}}
 
+4. "add_meeting_participation": Add accomplishments from meeting participation
+   - Create professional bullet points highlighting collaboration and communication
+   - Include meeting type, participation quality, and outcomes
+   - Data: {{"meetings": [{{"meeting_type": "...", "title": "...", "score": ..., "key_decisions": [...], "generated_tasks": ...}}]}}
+
 Output ONLY a JSON object:
 {{
   "personal_info": {{
@@ -52,26 +57,37 @@ Output ONLY a JSON object:
       "accomplishments": [
         "• Reduced system latency by 35% through database query optimization",
         "• Led team of 3 developers to deliver feature 2 weeks ahead of schedule",
-        "• Implemented automated testing suite covering 85% of codebase"
+        "• Implemented automated testing suite covering 85% of codebase",
+        "• Participated in 12 stakeholder meetings with 85% average participation score",
+        "• Collaborated effectively in cross-functional team meetings to drive project alignment"
       ]
     }}
   ],
-  "skills": ["Python", "SQL", "Leadership", "Problem Solving", "..."],
+  "skills": ["Python", "SQL", "Leadership", "Problem Solving", "Communication", "Collaboration", "..."],
   "stats": {{
     "tasks_completed": 45,
     "interviews_passed": 3,
-    "jobs_held": 2
+    "jobs_held": 2,
+    "meetings_attended": 12,
+    "avg_meeting_score": 85
   }}
 }}
 
 Guidelines for accomplishments:
-- Start with strong action verbs (Led, Implemented, Reduced, Increased, Developed, etc.)
+- Start with strong action verbs (Led, Implemented, Reduced, Increased, Developed, Participated, Collaborated, etc.)
 - Include quantifiable metrics (percentages, numbers, timeframes)
 - Be specific about technologies and methods
 - Keep bullets concise (1-2 lines)
 - Focus on impact and results
+- For meetings: highlight collaboration, communication, and leadership skills
+
+Guidelines for meeting accomplishments:
+- Emphasize soft skills: "Participated in", "Collaborated with", "Contributed to", "Led discussions in"
+- Include meeting frequency and quality: "Attended X meetings with Y% participation score"
+- Highlight outcomes: "Drove alignment across teams", "Facilitated decision-making", "Contributed to strategic planning"
+- Mention specific meeting types when impressive: "Presented to stakeholders", "Led performance reviews"
 
 Maintain professional formatting and ensure all data is preserved.""",
-    description="Updates player's CV with jobs and accomplishments",
+    description="Updates player's CV with jobs, accomplishments, and meeting participation",
     output_key="updated_cv"
 )

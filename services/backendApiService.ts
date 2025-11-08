@@ -4,7 +4,18 @@
  * Connects to the Cloud Run backend for multi-agent ADK workflow
  */
 
-import { Profession, PlayerProfile, Task, StoryEvent, JobListing, PlayerState, WorkTask } from '../types';
+import { 
+    Profession, 
+    PlayerProfile, 
+    Task, 
+    StoryEvent, 
+    JobListing, 
+    PlayerState, 
+    WorkTask,
+    Meeting,
+    MeetingSummary,
+    MeetingParticipant
+} from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { transformJob, transformJobs } from '../utils/jobTransform';
@@ -14,6 +25,59 @@ export { useQueryClient };
 
 // Cloud Run backend URL
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://career-rl-backend-1086514937351.europe-west1.run.app';
+
+// Meeting-specific types for API responses
+export interface ConversationMessage {
+    id: string;
+    type: 'topic_intro' | 'ai_response' | 'player_response' | 'system';
+    participant_id?: string;
+    participant_name?: string;
+    participant_role?: string;
+    content: string;
+    timestamp: string;
+    sentiment?: 'positive' | 'neutral' | 'constructive' | 'challenging';
+}
+
+export interface MeetingTopic {
+    id: string;
+    question: string;
+    context: string;
+    expected_points: string[];
+    ai_discussion_prompts: string[];
+}
+
+export interface MeetingDetails {
+    meeting_data: Meeting & {
+        topics: MeetingTopic[];
+        objective: string;
+        elapsed_time_minutes?: number;
+    };
+    conversation_history: ConversationMessage[];
+    current_topic_index: number;
+    is_player_turn: boolean;
+    is_processing: boolean;
+    meeting_complete: boolean;
+}
+
+export interface MeetingState extends MeetingDetails {}
+
+export interface MeetingTurnResponse {
+    ai_messages?: ConversationMessage[];
+    conversation_history?: ConversationMessage[];
+    meeting_complete?: boolean;
+    topic_complete?: boolean;
+    current_topic_index?: number;
+    next_topic_index?: number;
+    transition_message?: string;
+    is_player_turn?: boolean;
+    evaluation?: {
+        score: number;
+        xp_earned: number;
+        strengths: string[];
+        improvements: string[];
+    };
+    outcomes?: MeetingSummary;
+}
 
 // Error types
 export class SessionExpiredError extends Error {
@@ -939,5 +1003,367 @@ export const submitTaskVoiceSolution = async (
         }
 
         return await response.json();
+    });
+};
+
+// ============================================================================
+// MEETING API FUNCTIONS AND HOOKS
+// ============================================================================
+// Comprehensive meeting state management with:
+// - API service functions for all meeting endpoints
+// - React Query hooks with real-time updates and caching
+// - Optimistic UI updates for better UX
+// - Error handling and retry logic
+// - Conversation history caching
+// ============================================================================
+
+/**
+ * Get meetings for a session
+ */
+export const getMeetings = async (sessionId: string): Promise<Meeting[]> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(`${BACKEND_URL}/sessions/${sessionId}/meetings`, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to get meetings');
+        }
+
+        const data = await response.json();
+        return data.meetings || [];
+    });
+};
+
+/**
+ * Get meeting details
+ */
+export const getMeetingDetails = async (sessionId: string, meetingId: string): Promise<MeetingDetails> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}`,
+            {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to get meeting details');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * Generate a new meeting
+ */
+export const generateMeeting = async (
+    sessionId: string,
+    trigger?: string
+): Promise<Meeting> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/generate`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ trigger: trigger || 'manual' }),
+            },
+            45000 // Longer timeout for AI generation
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to generate meeting');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * Join a meeting
+ */
+export const joinMeeting = async (sessionId: string, meetingId: string): Promise<MeetingState> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/join`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            },
+            30000
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to join meeting');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * Submit response to meeting
+ */
+export const submitMeetingResponse = async (
+    sessionId: string,
+    meetingId: string,
+    response: string
+): Promise<MeetingTurnResponse> => {
+    return retryRequest(async () => {
+        const apiResponse = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/respond`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ response }),
+            },
+            60000 // Longer timeout for AI response generation
+        );
+
+        if (!apiResponse.ok) {
+            await handleApiError(apiResponse, 'Failed to submit meeting response');
+        }
+
+        return await apiResponse.json();
+    });
+};
+
+/**
+ * Leave a meeting early
+ */
+export const leaveMeeting = async (
+    sessionId: string,
+    meetingId: string
+): Promise<MeetingSummary> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/leave`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            },
+            30000
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to leave meeting');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * Get meeting summary
+ */
+export const getMeetingSummary = async (
+    sessionId: string,
+    meetingId: string
+): Promise<MeetingSummary> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/summary`,
+            {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            }
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to get meeting summary');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * React Query hook for meetings list
+ */
+export const useMeetings = (sessionId: string | null) => {
+    const queryClient = useQueryClient();
+
+    const query = useQuery({
+        queryKey: ['meetings', sessionId],
+        queryFn: () => {
+            if (!sessionId) throw new Error('No session ID');
+            return getMeetings(sessionId);
+        },
+        enabled: !!sessionId,
+        retry: (failureCount, error) => {
+            if (error instanceof SessionExpiredError) return false;
+            return failureCount < 2;
+        },
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+        staleTime: 5000, // Consider data stale after 5 seconds
+        refetchInterval: 10000, // Auto-refresh every 10 seconds for real-time updates
+    });
+
+    const generateMutation = useMutation({
+        mutationFn: (trigger?: string) => {
+            if (!sessionId) throw new Error('No session ID');
+            return generateMeeting(sessionId, trigger);
+        },
+        onSuccess: (newMeeting) => {
+            // Add new meeting to the cache
+            queryClient.setQueryData(['meetings', sessionId], (old: Meeting[] = []) => {
+                return [...old, newMeeting];
+            });
+        },
+        retry: 1,
+    });
+
+    return {
+        meetings: query.data || [],
+        isLoading: query.isLoading,
+        isError: query.isError,
+        error: query.error,
+        refetch: query.refetch,
+        generateMeeting: generateMutation.mutate,
+        generateMeetingAsync: generateMutation.mutateAsync,
+        isGenerating: generateMutation.isPending,
+        generateError: generateMutation.error,
+    };
+};
+
+/**
+ * React Query hook for meeting details with conversation history
+ */
+export const useMeetingDetails = (sessionId: string | null, meetingId: string | null) => {
+    const queryClient = useQueryClient();
+
+    const query = useQuery({
+        queryKey: ['meetingDetails', sessionId, meetingId],
+        queryFn: () => {
+            if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
+            return getMeetingDetails(sessionId, meetingId);
+        },
+        enabled: !!sessionId && !!meetingId,
+        retry: (failureCount, error) => {
+            if (error instanceof SessionExpiredError) return false;
+            return failureCount < 2;
+        },
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+        staleTime: 2000, // Short stale time for real-time conversation updates
+        refetchInterval: (query) => {
+            // Only auto-refresh if meeting is in progress
+            const data = query.state.data;
+            return data?.meeting_data?.status === 'in_progress' ? 3000 : false;
+        },
+    });
+
+    const joinMutation = useMutation({
+        mutationFn: () => {
+            if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
+            return joinMeeting(sessionId, meetingId);
+        },
+        onSuccess: (meetingState) => {
+            // Update meeting details cache with initial state
+            queryClient.setQueryData(['meetingDetails', sessionId, meetingId], meetingState);
+            // Update meetings list to reflect status change
+            queryClient.invalidateQueries({ queryKey: ['meetings', sessionId] });
+        },
+        retry: 1,
+    });
+
+    const respondMutation = useMutation({
+        mutationFn: (response: string) => {
+            if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
+            return submitMeetingResponse(sessionId, meetingId, response);
+        },
+        onSuccess: (turnResponse) => {
+            // Update meeting details cache with new conversation state
+            queryClient.setQueryData(['meetingDetails', sessionId, meetingId], (old: MeetingDetails) => {
+                if (!old) return old;
+                return {
+                    ...old,
+                    conversation_history: turnResponse.conversation_history || old.conversation_history,
+                    current_topic_index: turnResponse.current_topic_index ?? old.current_topic_index,
+                    is_player_turn: turnResponse.is_player_turn ?? old.is_player_turn,
+                    meeting_complete: turnResponse.meeting_complete ?? old.meeting_complete,
+                };
+            });
+            
+            // If meeting is complete, invalidate meetings list and player state
+            if (turnResponse.meeting_complete) {
+                queryClient.invalidateQueries({ queryKey: ['meetings', sessionId] });
+                queryClient.invalidateQueries({ queryKey: ['playerState', sessionId] });
+                queryClient.invalidateQueries({ queryKey: ['tasks', sessionId] });
+            }
+        },
+        retry: 1,
+    });
+
+    const leaveMutation = useMutation({
+        mutationFn: () => {
+            if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
+            return leaveMeeting(sessionId, meetingId);
+        },
+        onSuccess: () => {
+            // Invalidate queries after leaving
+            queryClient.invalidateQueries({ queryKey: ['meetings', sessionId] });
+            queryClient.invalidateQueries({ queryKey: ['meetingDetails', sessionId, meetingId] });
+            queryClient.invalidateQueries({ queryKey: ['playerState', sessionId] });
+        },
+        retry: 1,
+    });
+
+    return {
+        meetingDetails: query.data,
+        isLoading: query.isLoading,
+        isError: query.isError,
+        error: query.error,
+        refetch: query.refetch,
+        joinMeeting: joinMutation.mutate,
+        joinMeetingAsync: joinMutation.mutateAsync,
+        isJoining: joinMutation.isPending,
+        joinError: joinMutation.error,
+        submitResponse: respondMutation.mutate,
+        submitResponseAsync: respondMutation.mutateAsync,
+        isSubmitting: respondMutation.isPending,
+        submitResult: respondMutation.data,
+        submitError: respondMutation.error,
+        leaveMeeting: leaveMutation.mutate,
+        leaveMeetingAsync: leaveMutation.mutateAsync,
+        isLeaving: leaveMutation.isPending,
+        leaveError: leaveMutation.error,
+    };
+};
+
+/**
+ * React Query hook for meeting summary
+ */
+export const useMeetingSummary = (sessionId: string | null, meetingId: string | null) => {
+    return useQuery({
+        queryKey: ['meetingSummary', sessionId, meetingId],
+        queryFn: () => {
+            if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
+            return getMeetingSummary(sessionId, meetingId);
+        },
+        enabled: !!sessionId && !!meetingId,
+        retry: (failureCount, error) => {
+            if (error instanceof SessionExpiredError) return false;
+            return failureCount < 2;
+        },
+        retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
+        staleTime: Infinity, // Summary doesn't change once created
     });
 };

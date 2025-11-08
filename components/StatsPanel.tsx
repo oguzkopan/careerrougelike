@@ -11,6 +11,8 @@ interface StatsPanelProps {
     tasksCompleted: number;
     jobsHeld: number;
     interviewsPassed: number;
+    meetingsAttended?: number;
+    avgMeetingScore?: number;
   };
 }
 
@@ -133,6 +135,15 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ playerStats }) => {
             label="Interviews Passed"
             value={playerStats.interviewsPassed}
           />
+          {playerStats.meetingsAttended !== undefined && playerStats.meetingsAttended > 0 && (
+            <StatItem
+              icon={<svg className="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>}
+              label="Meetings Attended"
+              value={playerStats.meetingsAttended}
+            />
+          )}
         </div>
       </div>
 
@@ -163,6 +174,13 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ playerStats }) => {
               unlocked={true}
             />
           )}
+          {(playerStats.meetingsAttended ?? 0) >= 1 && (
+            <AchievementBadge
+              icon="🤝"
+              title="Team Player"
+              unlocked={true}
+            />
+          )}
           {playerStats.tasksCompleted >= 10 && (
             <AchievementBadge
               icon="⚡"
@@ -170,10 +188,24 @@ const StatsPanel: React.FC<StatsPanelProps> = ({ playerStats }) => {
               unlocked={true}
             />
           )}
+          {(playerStats.meetingsAttended ?? 0) >= 5 && (
+            <AchievementBadge
+              icon="💬"
+              title="Collaborator"
+              unlocked={true}
+            />
+          )}
           {playerStats.level >= 5 && (
             <AchievementBadge
               icon="🌟"
               title="Rising Star"
+              unlocked={true}
+            />
+          )}
+          {(playerStats.avgMeetingScore ?? 0) >= 80 && (playerStats.meetingsAttended ?? 0) >= 3 && (
+            <AchievementBadge
+              icon="🎖️"
+              title="Meeting MVP"
               unlocked={true}
             />
           )}

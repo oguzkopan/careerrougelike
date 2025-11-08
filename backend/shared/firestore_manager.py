@@ -379,6 +379,37 @@ class FirestoreManager:
         except Exception as e:
             raise Exception(f"Failed to retrieve active tasks for session {session_id}: {str(e)}")
     
+    def get_completed_tasks(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Retrieve recently completed tasks for a session.
+        
+        Args:
+            session_id: Session identifier
+            limit: Maximum number of tasks to retrieve (default: 10)
+        
+        Returns:
+            List of completed task dictionaries, ordered by completion time (most recent first)
+        
+        Raises:
+            Exception: If query fails
+        """
+        try:
+            tasks_ref = self.db.collection(self.tasks_collection)
+            query = tasks_ref.where(filter=FieldFilter("session_id", "==", session_id))
+            query = query.where(filter=FieldFilter("status", "==", "completed"))
+            query = query.order_by("updated_at", direction=firestore.Query.DESCENDING)
+            query = query.limit(limit)
+            
+            docs = query.stream()
+            return [doc.to_dict() for doc in docs]
+        except Exception as e:
+            # If the query fails (e.g., missing index), return empty list
+            # This prevents breaking the flow if Firestore index isn't set up yet
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to retrieve completed tasks for session {session_id}: {str(e)}")
+            return []
+    
     def get_task(self, task_id: str) -> Dict[str, Any]:
         """
         Retrieve a specific task from Firestore.
@@ -629,26 +660,65 @@ class FirestoreManager:
     
     # ==================== Meeting Management ====================
     
-    def create_meeting(self, meeting_id: str, session_id: str, meeting_data: dict):
+    def create_meeting(self, meeting_id: str, session_id: str, meeting_data: Dict[str, Any]) -> None:
         """
         Create a new meeting in Firestore.
+        
+        Meeting document structure:
+        {
+            "meeting_id": str,
+            "session_id": str,
+            "meeting_type": str (team_standup, one_on_one, project_review, stakeholder_presentation, performance_review),
+            "title": str,
+            "status": str (scheduled, in_progress, completed),
+            "context": str,
+            "participants": List[Dict] (id, name, role, personality, avatar_color),
+            "topics": List[Dict] (id, question, context, expected_points, ai_discussion_prompts),
+            "current_topic_index": int,
+            "conversation_history": List[Dict] (id, type, participant_id, participant_name, content, sentiment, timestamp),
+            "objective": str,
+            "estimated_duration_minutes": int,
+            "priority": str (optional, recommended, required),
+            "scheduled_time": Optional[str],
+            "started_at": Optional[str],
+            "completed_at": Optional[str],
+            "elapsed_time_minutes": int,
+            "created_at": str,
+            "updated_at": str
+        }
         
         Args:
             meeting_id: Unique meeting identifier
             session_id: Session identifier
             meeting_data: Meeting data dictionary
+        
+        Raises:
+            Exception: If meeting creation fails
         """
         try:
-            meeting_ref = self.db.collection('meetings').document(meeting_id)
+            # Set required fields
             meeting_data['meeting_id'] = meeting_id
             meeting_data['session_id'] = session_id
             meeting_data['created_at'] = datetime.utcnow().isoformat()
+            meeting_data['updated_at'] = datetime.utcnow().isoformat()
+            
+            # Set defaults if not provided
+            meeting_data.setdefault('status', 'scheduled')
+            meeting_data.setdefault('current_topic_index', 0)
+            meeting_data.setdefault('conversation_history', [])
+            meeting_data.setdefault('elapsed_time_minutes', 0)
+            meeting_data.setdefault('started_at', None)
+            meeting_data.setdefault('completed_at', None)
+            meeting_data.setdefault('scheduled_time', None)
+            
+            # Create document
+            meeting_ref = self.db.collection('meetings').document(meeting_id)
             meeting_ref.set(meeting_data)
             logger.info(f"Created meeting {meeting_id} for session {session_id}")
         except Exception as e:
             raise Exception(f"Failed to create meeting {meeting_id}: {str(e)}")
     
-    def get_meeting(self, meeting_id: str) -> dict:
+    def get_meeting(self, meeting_id: str) -> Dict[str, Any]:
         """
         Retrieve a meeting from Firestore.
         
@@ -660,6 +730,7 @@ class FirestoreManager:
         
         Raises:
             ValueError: If meeting not found
+            Exception: If retrieval fails
         """
         try:
             meeting_ref = self.db.collection('meetings').document(meeting_id)
@@ -674,38 +745,57 @@ class FirestoreManager:
         except Exception as e:
             raise Exception(f"Failed to get meeting {meeting_id}: {str(e)}")
     
-    def update_meeting(self, meeting_id: str, updates: dict):
+    def update_meeting(self, meeting_id: str, updates: Dict[str, Any]) -> None:
         """
         Update a meeting in Firestore.
         
         Args:
             meeting_id: Unique meeting identifier
             updates: Dictionary of fields to update
+        
+        Raises:
+            ValueError: If meeting not found
+            Exception: If update fails
         """
         try:
             meeting_ref = self.db.collection('meetings').document(meeting_id)
+            meeting_doc = meeting_ref.get()
+            
+            if not meeting_doc.exists:
+                raise ValueError(f"Meeting {meeting_id} not found")
+            
             updates['updated_at'] = datetime.utcnow().isoformat()
             meeting_ref.update(updates)
             logger.info(f"Updated meeting {meeting_id}")
+        except ValueError:
+            raise
         except Exception as e:
             raise Exception(f"Failed to update meeting {meeting_id}: {str(e)}")
     
-    def get_meetings_by_session(self, session_id: str, status: str = None) -> list:
+    def get_meetings_by_session(self, session_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get all meetings for a session, optionally filtered by status.
         
         Args:
             session_id: Session identifier
-            status: Optional status filter (active, completed)
+            status: Optional status filter (scheduled, in_progress, completed)
         
         Returns:
-            List of meeting dictionaries
+            List of meeting dictionaries ordered by created_at descending
+        
+        Raises:
+            Exception: If query fails
         """
         try:
-            query = self.db.collection('meetings').where('session_id', '==', session_id)
+            query = self.db.collection('meetings').where(
+                filter=FieldFilter("session_id", "==", session_id)
+            )
             
             if status:
-                query = query.where('status', '==', status)
+                query = query.where(filter=FieldFilter("status", "==", status))
+            
+            # Order by created_at descending (newest first)
+            query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
             
             meetings = []
             for doc in query.stream():
@@ -715,3 +805,219 @@ class FirestoreManager:
             return meetings
         except Exception as e:
             raise Exception(f"Failed to get meetings for session {session_id}: {str(e)}")
+    
+    def update_meeting_status(self, meeting_id: str, status: str) -> None:
+        """
+        Update the status of a meeting.
+        
+        Args:
+            meeting_id: Unique meeting identifier
+            status: New status (scheduled, in_progress, completed)
+        
+        Raises:
+            ValueError: If meeting not found
+            Exception: If update fails
+        """
+        try:
+            updates = {'status': status}
+            
+            # Set timestamps based on status
+            if status == 'in_progress':
+                updates['started_at'] = datetime.utcnow().isoformat()
+            elif status == 'completed':
+                updates['completed_at'] = datetime.utcnow().isoformat()
+            
+            self.update_meeting(meeting_id, updates)
+        except Exception as e:
+            raise Exception(f"Failed to update meeting status for {meeting_id}: {str(e)}")
+    
+    def append_conversation_message(
+        self,
+        meeting_id: str,
+        message: Dict[str, Any]
+    ) -> None:
+        """
+        Append a message to the meeting's conversation history.
+        
+        Message structure:
+        {
+            "id": str,
+            "type": str (topic_intro, ai_response, player_response, system),
+            "participant_id": Optional[str],
+            "participant_name": Optional[str],
+            "participant_role": Optional[str],
+            "content": str,
+            "sentiment": Optional[str] (positive, neutral, constructive, challenging),
+            "timestamp": str
+        }
+        
+        Args:
+            meeting_id: Unique meeting identifier
+            message: Message dictionary to append
+        
+        Raises:
+            ValueError: If meeting not found
+            Exception: If update fails
+        """
+        try:
+            meeting = self.get_meeting(meeting_id)
+            conversation_history = meeting.get('conversation_history', [])
+            
+            # Add timestamp if not present
+            if 'timestamp' not in message:
+                message['timestamp'] = datetime.utcnow().isoformat()
+            
+            conversation_history.append(message)
+            
+            self.update_meeting(meeting_id, {
+                'conversation_history': conversation_history
+            })
+        except Exception as e:
+            raise Exception(f"Failed to append message to meeting {meeting_id}: {str(e)}")
+    
+    def update_meeting_topic(self, meeting_id: str, topic_index: int) -> None:
+        """
+        Update the current topic index for a meeting.
+        
+        Args:
+            meeting_id: Unique meeting identifier
+            topic_index: New topic index
+        
+        Raises:
+            ValueError: If meeting not found
+            Exception: If update fails
+        """
+        try:
+            self.update_meeting(meeting_id, {
+                'current_topic_index': topic_index
+            })
+        except Exception as e:
+            raise Exception(f"Failed to update topic for meeting {meeting_id}: {str(e)}")
+    
+    def get_active_meetings(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all active meetings (scheduled or in_progress) for a session.
+        
+        Args:
+            session_id: Session identifier
+        
+        Returns:
+            List of active meeting dictionaries
+        
+        Raises:
+            Exception: If query fails
+        """
+        try:
+            query = self.db.collection('meetings').where(
+                filter=FieldFilter("session_id", "==", session_id)
+            )
+            query = query.where(
+                filter=FieldFilter("status", "in", ["scheduled", "in_progress"])
+            )
+            query = query.order_by("created_at", direction=firestore.Query.ASCENDING)
+            
+            meetings = []
+            for doc in query.stream():
+                meeting_data = doc.to_dict()
+                meetings.append(meeting_data)
+            
+            return meetings
+        except Exception as e:
+            raise Exception(f"Failed to get active meetings for session {session_id}: {str(e)}")
+    
+    # ==================== Meeting Summary Management ====================
+    
+    def create_meeting_summary(
+        self,
+        meeting_id: str,
+        session_id: str,
+        summary_data: Dict[str, Any]
+    ) -> None:
+        """
+        Create a meeting summary document in Firestore.
+        
+        Summary document structure:
+        {
+            "meeting_id": str,
+            "session_id": str,
+            "xp_earned": int,
+            "participation_score": int,
+            "generated_tasks": List[Dict] (task_id, title, source),
+            "key_decisions": List[str],
+            "action_items": List[str],
+            "feedback": Dict (strengths: List[str], improvements: List[str]),
+            "created_at": str
+        }
+        
+        Args:
+            meeting_id: Unique meeting identifier
+            session_id: Session identifier
+            summary_data: Summary data dictionary
+        
+        Raises:
+            Exception: If summary creation fails
+        """
+        try:
+            summary_data['meeting_id'] = meeting_id
+            summary_data['session_id'] = session_id
+            summary_data['created_at'] = datetime.utcnow().isoformat()
+            
+            # Use meeting_id as document ID for easy lookup
+            summary_ref = self.db.collection('meeting_summaries').document(meeting_id)
+            summary_ref.set(summary_data)
+            logger.info(f"Created meeting summary for meeting {meeting_id}")
+        except Exception as e:
+            raise Exception(f"Failed to create meeting summary for {meeting_id}: {str(e)}")
+    
+    def get_meeting_summary(self, meeting_id: str) -> Dict[str, Any]:
+        """
+        Retrieve a meeting summary from Firestore.
+        
+        Args:
+            meeting_id: Unique meeting identifier
+        
+        Returns:
+            Meeting summary dictionary
+        
+        Raises:
+            ValueError: If summary not found
+            Exception: If retrieval fails
+        """
+        try:
+            summary_ref = self.db.collection('meeting_summaries').document(meeting_id)
+            summary_doc = summary_ref.get()
+            
+            if not summary_doc.exists:
+                raise ValueError(f"Meeting summary for {meeting_id} not found")
+            
+            return summary_doc.to_dict()
+        except ValueError:
+            raise
+        except Exception as e:
+            raise Exception(f"Failed to get meeting summary for {meeting_id}: {str(e)}")
+    
+    def update_meeting_summary(self, meeting_id: str, updates: Dict[str, Any]) -> None:
+        """
+        Update a meeting summary in Firestore.
+        
+        Args:
+            meeting_id: Unique meeting identifier
+            updates: Dictionary of fields to update
+        
+        Raises:
+            ValueError: If summary not found
+            Exception: If update fails
+        """
+        try:
+            summary_ref = self.db.collection('meeting_summaries').document(meeting_id)
+            summary_doc = summary_ref.get()
+            
+            if not summary_doc.exists:
+                raise ValueError(f"Meeting summary for {meeting_id} not found")
+            
+            summary_ref.update(updates)
+            logger.info(f"Updated meeting summary for meeting {meeting_id}")
+        except ValueError:
+            raise
+        except Exception as e:
+            raise Exception(f"Failed to update meeting summary for {meeting_id}: {str(e)}")

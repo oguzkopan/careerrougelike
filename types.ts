@@ -130,6 +130,8 @@ export interface PlayerState {
     jobsHeld: number;
     interviewsPassed: number;
     interviewsFailed: number;
+    meetingsAttended?: number;
+    avgMeetingScore?: number;
   };
   cv_data?: CVData;
   createdAt: string;
@@ -224,4 +226,77 @@ export interface CVData {
   experience: JobExperience[];
   skills: string[];
   accomplishments: string[];
+}
+
+export type MeetingType = 
+  | 'team_standup' 
+  | 'one_on_one' 
+  | 'project_review' 
+  | 'stakeholder_presentation' 
+  | 'performance_review'
+  | 'team_meeting'
+  | 'project_update'
+  | 'feedback_session';
+
+export type MeetingStatus = 'scheduled' | 'in_progress' | 'completed';
+
+export type MeetingPriority = 'optional' | 'recommended' | 'required';
+
+export interface MeetingParticipant {
+  id: string;
+  name: string;
+  role: string;
+  personality: string;
+  avatar_color: string;
+}
+
+export interface Meeting {
+  id: string;
+  meeting_type: MeetingType;
+  title: string;
+  status: MeetingStatus;
+  scheduled_time?: string;
+  priority: MeetingPriority;
+  participants: MeetingParticipant[];
+  estimated_duration_minutes: number;
+  context: string;
+  context_preview?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface MeetingSummary {
+  meetingId?: string;
+  meeting_id?: string;
+  sessionId?: string;
+  session_id?: string;
+  xpGained?: number;
+  xp_earned?: number;
+  overallScore?: number;
+  participationScore?: number;
+  participation_score?: number;
+  generatedTasks?: Array<{
+    taskId?: string;
+    task_id?: string;
+    title: string;
+    source: string;
+  }>;
+  generated_tasks?: Array<{
+    task_id: string;
+    title: string;
+    source: string;
+  }>;
+  keyDecisions?: string[];
+  key_decisions?: string[];
+  actionItems?: string[];
+  action_items?: string[];
+  feedback: {
+    strengths: string[];
+    improvements: string[];
+  };
+  earlyDeparture?: boolean;
+  early_departure?: boolean;
+  createdAt?: string;
+  created_at?: string;
 }
