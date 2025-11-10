@@ -2409,12 +2409,24 @@ async def join_meeting(
             )
             
             logger.info(f"Meeting {meeting_id} started with {len(messages)} initial messages")
+            
+            # CRITICAL: Wait for Firestore to persist (eventual consistency)
+            import asyncio
+            await asyncio.sleep(0.5)
+            
+            # Get fresh meeting state after persistence
+            meeting_state = state_manager.get_meeting_state(meeting_id)
+            
+            logger.info(
+                f"Meeting {meeting_id} state after start: "
+                f"conversation_history={len(meeting_state.get('conversation_history', []))} messages, "
+                f"is_player_turn={meeting_state.get('is_player_turn')}, "
+                f"current_topic_index={meeting_state.get('current_topic_index')}"
+            )
         else:
             # Rejoining an in-progress meeting - just return current state
             logger.info(f"Rejoining in-progress meeting {meeting_id}")
-        
-        # Get updated meeting state
-        meeting_state = state_manager.get_meeting_state(meeting_id)
+            meeting_state = state_manager.get_meeting_state(meeting_id)
         
         return {
             "meeting_id": meeting_id,

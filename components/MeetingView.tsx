@@ -75,27 +75,99 @@ const MeetingView: React.FC<MeetingViewProps> = ({
   const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [isAISpeaking, setIsAISpeaking] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
   const { showToast } = useToast();
 
   const currentTopic = meetingData.topics[currentTopicIndex];
   const progress = ((currentTopicIndex + 1) / meetingData.topics.length) * 100;
   const conversationEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize with first topic
+  // Initialize meeting state from backend data
   useEffect(() => {
-    if (conversationHistory.length === 0 && currentTopic) {
-      // Add topic introduction
-      setConversationHistory([{
-        type: 'topic',
-        content: currentTopic.question,
-      }]);
-      
-      // After a brief delay, enable player turn
-      setTimeout(() => {
-        setIsPlayerTurn(true);
-      }, 1000);
+    if (isInitialized) return;
+
+    console.log('[MeetingView] Initializing meeting view with data:', {
+      hasConversationHistory: !!(meetingData as any).conversation_history,
+      historyLength: ((meetingData as any).conversation_history || []).length,
+      currentTopicIndex: (meetingData as any).current_topic_index,
+      isPlayerTurn: (meetingData as any).is_player_turn,
+      topicsCount: meetingData.topics.length
+    });
+
+    // Set topic index from backend
+    const backendTopicIndex = (meetingData as any).current_topic_index;
+    if (typeof backendTopicIndex === 'number' && backendTopicIndex >= 0) {
+      setCurrentTopicIndex(backendTopicIndex);
+      console.log('[MeetingView] Set topic index to:', backendTopicIndex);
     }
-  }, [currentTopic, conversationHistory.length]);
+
+    // Load conversation history from backend
+    const backendHistory = (meetingData as any).conversation_history || [];
+    
+    if (backendHistory.length > 0) {
+      console.log('[MeetingView] Loading', backendHistory.length, 'messages from backend');
+      
+      // Convert backend message format to frontend format
+      const convertedHistory: Message[] = backendHistory
+        .map((msg: any) => {
+          if (msg.type === 'topic_intro') {
+            return {
+              type: 'topic' as const,
+              content: msg.content
+            };
+          } else if (msg.type === 'ai_response') {
+            return {
+              type: 'ai' as const,
+              content: msg.content,
+              participant: msg.participant_name,
+              sentiment: msg.sentiment
+            };
+          } else if (msg.type === 'player_response') {
+            return {
+              type: 'player' as const,
+              content: msg.content
+            };
+          }
+          return null;
+        })
+        .filter((msg: any) => msg !== null);
+      
+      setConversationHistory(convertedHistory);
+      console.log('[MeetingView] Loaded', convertedHistory.length, 'messages');
+      
+      // Set player turn from backend
+      const backendPlayerTurn = (meetingData as any).is_player_turn;
+      if (typeof backendPlayerTurn === 'boolean') {
+        setIsPlayerTurn(backendPlayerTurn);
+        console.log('[MeetingView] Player turn:', backendPlayerTurn);
+      } else {
+        // Default: enable player turn if there are messages
+        setIsPlayerTurn(true);
+        console.log('[MeetingView] Defaulting player turn to true');
+      }
+    } else {
+      // No backend history - initialize with topic question and enable player turn
+      console.log('[MeetingView] No backend history - initializing with topic question');
+      
+      const topic = meetingData.topics[backendTopicIndex || 0];
+      if (topic) {
+        setConversationHistory([{
+          type: 'topic',
+          content: topic.question,
+        }]);
+        
+        // Enable player turn after a brief delay
+        setTimeout(() => {
+          setIsPlayerTurn(true);
+          console.log('[MeetingView] Player turn enabled after delay');
+        }, 1000);
+      } else {
+        console.error('[MeetingView] No topic found at index', backendTopicIndex || 0);
+      }
+    }
+    
+    setIsInitialized(true);
+  }, [meetingData, isInitialized]);
 
   // Auto-scroll to latest message
   useEffect(() => {
