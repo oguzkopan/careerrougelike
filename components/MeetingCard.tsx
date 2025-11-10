@@ -9,9 +9,10 @@ interface MeetingCardProps {
   meeting: Meeting;
   onJoin: () => void;
   onViewDetails?: () => void;
+  compact?: boolean;
 }
 
-const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetails }) => {
+const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetails, compact = false }) => {
   const isCompleted = meeting.status === 'completed';
 
   // Get status-specific styling
@@ -85,32 +86,33 @@ const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetail
     <motion.div
       whileHover={{ y: -2, scale: 1.01 }}
       transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-      className={`meeting-card meeting-card-distinct p-4 rounded-lg border-2 transition-all duration-200 ${statusStyles.border} ${statusStyles.bg} ${statusStyles.hover} ${
+      className={`meeting-card meeting-card-distinct ${compact ? 'p-2.5 md:p-3' : 'p-4'} rounded-lg border-2 transition-all duration-200 ${statusStyles.border} ${statusStyles.bg} ${statusStyles.hover} ${
         isCompleted ? 'opacity-75' : ''
       }`}
     >
       {/* Header */}
-      <div className="flex justify-between items-start mb-3">
-        <div className="flex items-start gap-3 flex-1">
-          <span className="text-2xl">{typeInfo.icon}</span>
-          <div className="flex-1">
-            <h3 className="font-semibold text-white text-base line-clamp-1">
+      <div className={`flex justify-between items-start ${compact ? 'mb-2' : 'mb-3'} gap-2`}>
+        <div className={`flex items-start ${compact ? 'gap-1.5 md:gap-2' : 'gap-3'} flex-1 min-w-0`}>
+          <span className={`${compact ? 'text-lg md:text-xl' : 'text-2xl'} flex-shrink-0`}>{typeInfo.icon}</span>
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <h3 className={`font-semibold text-white ${compact ? 'text-xs md:text-sm' : 'text-base'} truncate`}>
               {meeting.title}
             </h3>
-            <p className="text-sm text-gray-400 mt-1">{typeInfo.label}</p>
+            <p className={`${compact ? 'text-[10px] md:text-xs' : 'text-sm'} text-gray-400 mt-0.5 md:mt-1 truncate`}>{typeInfo.label}</p>
           </div>
         </div>
-        <div className="flex flex-col gap-2 items-end">
-          <span className={`px-2 py-1 rounded text-xs font-medium whitespace-nowrap ${statusStyles.badge} flex items-center gap-1.5`}>
+        <div className="flex flex-col gap-1 md:gap-2 items-end flex-shrink-0">
+          <span className={`px-1.5 md:px-2 py-0.5 md:py-1 rounded text-[10px] md:text-xs font-medium whitespace-nowrap ${statusStyles.badge} flex items-center gap-1 md:gap-1.5`}>
             <span className={`status-indicator ${
               meeting.status === 'scheduled' ? 'status-indicator-scheduled' :
               meeting.status === 'in_progress' ? 'status-indicator-in-progress' :
               'status-indicator-completed'
             }`}></span>
-            {meeting.status === 'in_progress' ? 'In Progress' : meeting.status === 'scheduled' ? 'Scheduled' : 'Completed'}
+            <span className="hidden sm:inline">{meeting.status === 'in_progress' ? 'In Progress' : meeting.status === 'scheduled' ? 'Scheduled' : 'Completed'}</span>
+            <span className="sm:hidden">{meeting.status === 'in_progress' ? 'Active' : meeting.status === 'scheduled' ? 'Soon' : 'Done'}</span>
           </span>
           {meeting.priority !== 'optional' && (
-            <span className={`px-2 py-1 rounded text-xs font-medium whitespace-nowrap ${getPriorityStyles()} ${
+            <span className={`px-1.5 md:px-2 py-0.5 md:py-1 rounded text-[10px] md:text-xs font-medium whitespace-nowrap ${getPriorityStyles()} ${
               meeting.priority === 'required' ? 'priority-badge-required' :
               meeting.priority === 'recommended' ? 'priority-badge-recommended' : ''
             }`}>
@@ -122,44 +124,44 @@ const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetail
 
       {/* Context Preview */}
       {meeting.context_preview && (
-        <p className="text-gray-400 text-sm mb-3 line-clamp-2">
+        <p className={`text-gray-400 ${compact ? 'text-[10px] md:text-xs mb-2' : 'text-sm mb-3'} line-clamp-2 overflow-hidden`}>
           {meeting.context_preview}
         </p>
       )}
 
       {/* Participants */}
-      <div className="flex items-center gap-2 mb-3">
-        <Users className="w-4 h-4 text-gray-500" />
-        <div className="flex -space-x-2">
-          {meeting.participants.slice(0, 4).map((participant) => (
+      <div className={`flex items-center gap-1.5 md:gap-2 ${compact ? 'mb-2' : 'mb-3'} overflow-hidden`}>
+        <Users className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
+        <div className="flex -space-x-1.5 md:-space-x-2 flex-shrink-0">
+          {meeting.participants.slice(0, compact ? 2 : 4).map((participant) => (
             <div
               key={participant.id}
-              className="participant-avatar w-8 h-8 rounded-full border-2 border-gray-800 flex items-center justify-center text-xs font-semibold cursor-pointer"
+              className={`participant-avatar ${compact ? 'w-5 h-5 md:w-6 md:h-6 text-[10px] md:text-xs' : 'w-8 h-8 text-xs'} rounded-full border-2 border-gray-800 flex items-center justify-center font-semibold cursor-pointer flex-shrink-0`}
               style={{ backgroundColor: participant.avatar_color }}
               title={`${participant.name} - ${participant.role}`}
             >
               {participant.name.charAt(0)}
             </div>
           ))}
-          {meeting.participants.length > 4 && (
-            <div className="participant-avatar w-8 h-8 rounded-full border-2 border-gray-800 bg-gray-700 flex items-center justify-center text-xs font-semibold text-gray-300 cursor-pointer">
-              +{meeting.participants.length - 4}
+          {meeting.participants.length > (compact ? 2 : 4) && (
+            <div className={`participant-avatar ${compact ? 'w-5 h-5 md:w-6 md:h-6 text-[10px] md:text-xs' : 'w-8 h-8 text-xs'} rounded-full border-2 border-gray-800 bg-gray-700 flex items-center justify-center font-semibold text-gray-300 cursor-pointer flex-shrink-0`}>
+              +{meeting.participants.length - (compact ? 2 : 4)}
             </div>
           )}
         </div>
-        <span className="text-sm text-gray-500 ml-2">
+        <span className={`${compact ? 'text-[10px] md:text-xs' : 'text-sm'} text-gray-500 ml-1 md:ml-2 hidden sm:inline truncate`}>
           {meeting.participants.length} participant{meeting.participants.length !== 1 ? 's' : ''}
         </span>
       </div>
 
       {/* Footer */}
-      <div className="flex justify-between items-center pt-3 border-t border-gray-700">
-        <div className="flex items-center gap-1 text-sm text-gray-400">
-          <Clock className="w-4 h-4" />
-          <span>{meeting.estimated_duration_minutes} min</span>
+      <div className={`flex justify-between items-center ${compact ? 'pt-1.5 md:pt-2' : 'pt-3'} border-t border-gray-700 gap-2`}>
+        <div className={`flex items-center gap-0.5 md:gap-1 ${compact ? 'text-[10px] md:text-xs' : 'text-sm'} text-gray-400 flex-shrink-0`}>
+          <Clock className="w-3 h-3 md:w-4 md:h-4 flex-shrink-0" />
+          <span className="whitespace-nowrap">{meeting.estimated_duration_minutes} min</span>
         </div>
         
-        <div className="flex gap-2">
+        <div className={`flex ${compact ? 'gap-1' : 'gap-2'} flex-shrink-0`}>
           {onViewDetails && (
             <Button
               onClick={(e) => {
@@ -167,9 +169,10 @@ const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetail
                 onViewDetails();
               }}
               variant="secondary"
-              className="text-sm px-3 py-1.5"
+              className={compact ? 'text-[10px] md:text-xs px-1.5 md:px-2 py-0.5 md:py-1 whitespace-nowrap' : 'text-sm px-3 py-1.5 whitespace-nowrap'}
             >
-              View Details
+              <span className="hidden sm:inline">View Details</span>
+              <span className="sm:hidden">Details</span>
             </Button>
           )}
           
@@ -179,9 +182,10 @@ const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetail
                 e.stopPropagation();
                 onJoin();
               }}
-              className="text-sm px-4 py-1.5"
+              className={compact ? 'text-[10px] md:text-xs px-1.5 md:px-2 py-0.5 md:py-1 whitespace-nowrap' : 'text-sm px-4 py-1.5 whitespace-nowrap'}
             >
-              {meeting.status === 'in_progress' ? 'Rejoin' : 'Join Meeting'}
+              <span className="hidden sm:inline">{meeting.status === 'in_progress' ? 'Rejoin' : 'Join Meeting'}</span>
+              <span className="sm:hidden">Join</span>
             </Button>
           )}
           
@@ -192,9 +196,10 @@ const MeetingCard: React.FC<MeetingCardProps> = ({ meeting, onJoin, onViewDetail
                 onViewDetails();
               }}
               variant="secondary"
-              className="text-sm px-4 py-1.5"
+              className={compact ? 'text-[10px] md:text-xs px-1.5 md:px-2 py-0.5 md:py-1 whitespace-nowrap' : 'text-sm px-4 py-1.5 whitespace-nowrap'}
             >
-              View Summary
+              <span className="hidden sm:inline">View Summary</span>
+              <span className="sm:hidden">Summary</span>
             </Button>
           )}
         </div>

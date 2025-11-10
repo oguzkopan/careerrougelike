@@ -14,7 +14,11 @@ import {
     WorkTask,
     Meeting,
     MeetingSummary,
-    MeetingParticipant
+    MeetingParticipant,
+    ConversationMessage,
+    MeetingTopic,
+    MeetingState,
+    ValidationResult
 } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -27,25 +31,6 @@ export { useQueryClient };
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://career-rl-backend-1086514937351.europe-west1.run.app';
 
 // Meeting-specific types for API responses
-export interface ConversationMessage {
-    id: string;
-    type: 'topic_intro' | 'ai_response' | 'player_response' | 'system';
-    participant_id?: string;
-    participant_name?: string;
-    participant_role?: string;
-    content: string;
-    timestamp: string;
-    sentiment?: 'positive' | 'neutral' | 'constructive' | 'challenging';
-}
-
-export interface MeetingTopic {
-    id: string;
-    question: string;
-    context: string;
-    expected_points: string[];
-    ai_discussion_prompts: string[];
-}
-
 export interface MeetingDetails {
     meeting_data: Meeting & {
         topics: MeetingTopic[];
@@ -58,8 +43,6 @@ export interface MeetingDetails {
     is_processing: boolean;
     meeting_complete: boolean;
 }
-
-export interface MeetingState extends MeetingDetails {}
 
 export interface MeetingTurnResponse {
     ai_messages?: ConversationMessage[];
@@ -1091,6 +1074,7 @@ export const generateMeeting = async (
 
 /**
  * Join a meeting
+ * Returns meeting state with conversation history and turn management
  */
 export const joinMeeting = async (sessionId: string, meetingId: string): Promise<MeetingState> => {
     return retryRequest(async () => {
@@ -1102,23 +1086,35 @@ export const joinMeeting = async (sessionId: string, meetingId: string): Promise
                     'Content-Type': 'application/json',
                 },
             },
-            30000
+            45000 // Longer timeout for initial AI discussion generation
         );
 
         if (!response.ok) {
             await handleApiError(response, 'Failed to join meeting');
         }
 
-        return await response.json();
-    });
+        const data = await response.json();
+        
+        // Ensure all required fields are present in the response
+        return {
+            meeting_data: data.meeting_data,
+            conversation_history: data.conversation_history || [],
+            current_topic_index: data.current_topic_index ?? 0,
+            is_player_turn: data.is_player_turn ?? false,
+            is_processing: data.is_processing ?? false,
+            meeting_complete: data.meeting_complete ?? false,
+        };
+    }, 2, 1000); // Retry up to 2 times with 1s delay
 };
 
 /**
  * Submit response to meeting
+ * Handles player input and returns AI reactions with updated meeting state
  */
 export const submitMeetingResponse = async (
     sessionId: string,
     meetingId: string,
+    topicId: string,
     response: string
 ): Promise<MeetingTurnResponse> => {
     return retryRequest(async () => {
@@ -1129,7 +1125,7 @@ export const submitMeetingResponse = async (
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ response }),
+                body: JSON.stringify({ topic_id: topicId, response }),
             },
             60000 // Longer timeout for AI response generation
         );
@@ -1138,12 +1134,111 @@ export const submitMeetingResponse = async (
             await handleApiError(apiResponse, 'Failed to submit meeting response');
         }
 
-        return await apiResponse.json();
+        const data = await apiResponse.json();
+        
+        // Normalize response format
+        return {
+            ai_messages: data.ai_messages || [],
+            conversation_history: data.conversation_history || [],
+            meeting_complete: data.meeting_complete ?? false,
+            topic_complete: data.topic_complete ?? false,
+            current_topic_index: data.current_topic_index,
+            next_topic_index: data.next_topic_index,
+            transition_message: data.transition_message,
+            is_player_turn: data.is_player_turn ?? false,
+            evaluation: data.evaluation,
+            outcomes: data.outcomes,
+        };
+    }, 2, 1000); // Retry up to 2 times with 1s delay
+};
+
+/**
+ * Respond to a meeting topic (alias for submitMeetingResponse)
+ */
+export const respondToTopic = async (
+    sessionId: string,
+    meetingId: string,
+    topicId: string,
+    response: string
+): Promise<{
+    ai_responses: any[];
+    evaluation: any;
+    next_topic_index: number;
+    meeting_complete: boolean;
+}> => {
+    const result = await submitMeetingResponse(sessionId, meetingId, topicId, response);
+    return {
+        ai_responses: result.ai_messages || [],
+        evaluation: result.evaluation || {},
+        next_topic_index: result.next_topic_index || 0,
+        meeting_complete: result.meeting_complete || false
+    };
+};
+
+/**
+ * Start a new topic in an ongoing meeting
+ * Returns topic introduction and initial AI discussion messages
+ */
+export const startMeetingTopic = async (
+    sessionId: string,
+    meetingId: string,
+    topicIndex: number
+): Promise<{
+    messages: any[];
+    current_topic_index: number;
+    is_player_turn: boolean;
+}> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/topics/${topicIndex}/start`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            },
+            30000
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to start meeting topic');
+        }
+
+        return await response.json();
+    });
+};
+
+/**
+ * Complete a meeting and get full summary
+ * Generates tasks, awards XP, and returns meeting outcomes
+ */
+export const completeMeeting = async (
+    sessionId: string,
+    meetingId: string
+): Promise<any> => {
+    return retryRequest(async () => {
+        const response = await fetchWithTimeout(
+            `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/complete`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            },
+            60000 // Longer timeout for task generation
+        );
+
+        if (!response.ok) {
+            await handleApiError(response, 'Failed to complete meeting');
+        }
+
+        return await response.json();
     });
 };
 
 /**
  * Leave a meeting early
+ * Marks meeting as left_early and returns partial XP summary
  */
 export const leaveMeeting = async (
     sessionId: string,
@@ -1165,8 +1260,58 @@ export const leaveMeeting = async (
             await handleApiError(response, 'Failed to leave meeting');
         }
 
-        return await response.json();
-    });
+        const data = await response.json();
+        
+        // Normalize summary format (handle both snake_case and camelCase)
+        return {
+            meetingId: data.meeting_id || data.meetingId,
+            sessionId: data.session_id || data.sessionId,
+            xpGained: data.xp_earned || data.xpGained || 0,
+            overallScore: data.overallScore,
+            participationScore: data.participation_score || data.participationScore,
+            generatedTasks: data.generated_tasks || data.generatedTasks || [],
+            keyDecisions: data.key_decisions || data.keyDecisions || [],
+            actionItems: data.action_items || data.actionItems || [],
+            feedback: data.feedback || { strengths: [], improvements: [] },
+            earlyDeparture: data.early_departure ?? data.earlyDeparture ?? true,
+            createdAt: data.created_at || data.createdAt,
+        };
+    }, 2, 1000); // Retry up to 2 times with 1s delay
+};
+
+/**
+ * Get new meeting messages since last message ID (for live polling)
+ * Enhanced with better error handling for polling requests
+ */
+export const getMeetingMessages = async (
+    sessionId: string,
+    meetingId: string,
+    lastMessageId: string | null
+): Promise<ConversationMessage[]> => {
+    return retryRequest(async () => {
+        const url = lastMessageId 
+            ? `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/messages?since=${lastMessageId}`
+            : `${BACKEND_URL}/sessions/${sessionId}/meetings/${meetingId}/messages`;
+        
+        const response = await fetchWithTimeout(url, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        }, 10000); // Shorter timeout for polling requests
+
+        if (!response.ok) {
+            // Don't throw error for 404 - just return empty array (meeting may not exist yet)
+            if (response.status === 404) {
+                console.warn(`Meeting ${meetingId} not found or no messages available`);
+                return [];
+            }
+            await handleApiError(response, 'Failed to get meeting messages');
+        }
+
+        const data = await response.json();
+        return data.messages || [];
+    }, 2, 500); // Retry up to 2 times with shorter delay for polling
 };
 
 /**
@@ -1285,9 +1430,9 @@ export const useMeetingDetails = (sessionId: string | null, meetingId: string | 
     });
 
     const respondMutation = useMutation({
-        mutationFn: (response: string) => {
+        mutationFn: ({ topicId, response }: { topicId: string; response: string }) => {
             if (!sessionId || !meetingId) throw new Error('Missing session ID or meeting ID');
-            return submitMeetingResponse(sessionId, meetingId, response);
+            return submitMeetingResponse(sessionId, meetingId, topicId, response);
         },
         onSuccess: (turnResponse) => {
             // Update meeting details cache with new conversation state

@@ -78,3 +78,26 @@ export const celebrateTaskComplete = () => {
     zIndex: 9999
   });
 };
+
+export const showTaskFailure = () => {
+  // Red/gray particles falling down to indicate failure
+  const particleCount = 50;
+  const defaults = {
+    startVelocity: 20,
+    spread: 50,
+    ticks: 100,
+    zIndex: 9999,
+    gravity: 1.5,
+    drift: 0,
+    colors: ['#EF4444', '#991B1B', '#7F1D1D', '#6B7280', '#4B5563']
+  };
+
+  // Fire from top center, falling down
+  confetti({
+    ...defaults,
+    particleCount,
+    origin: { x: 0.5, y: 0.2 },
+    angle: 90,
+    shapes: ['circle']
+  });
+};

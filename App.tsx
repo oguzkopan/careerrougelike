@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useQueryClient } from '@tanstack/react-query';
 import ProfessionSelector from './components/ProfessionSelector';
 import GameScreen from './components/GameScreen';
-import AgentDashboard from './components/AgentDashboard';
 import GraduationScreen from './components/GraduationScreen';
 import JobListingsView from './components/JobListingsView';
 import JobDetailView from './components/JobDetailView';
@@ -337,7 +336,6 @@ const InterviewResultViewWrapper: React.FC<{
 };
 
 const App: React.FC = () => {
-  const [view, setView] = useState<'game' | 'agents'>('game');
   const { showToast } = useToast();
   
   // Legacy game state for backward compatibility
@@ -600,24 +598,6 @@ const App: React.FC = () => {
     }
   }, [gameState.sessionId, gameState.currentTask]);
 
-  // Render based on view (agents dashboard or game)
-  if (view === 'agents') {
-    return (
-      <AnimatePresence mode="wait">
-        <motion.div
-          key="agents"
-          initial="initial"
-          animate="animate"
-          exit="exit"
-          variants={pageVariants}
-          transition={pageTransition}
-        >
-          <AgentDashboard onNavigateBack={() => setView('game')} />
-        </motion.div>
-      </AnimatePresence>
-    );
-  }
-
   // Render based on app state
   return (
     <AnimatePresence mode="wait">
@@ -634,7 +614,6 @@ const App: React.FC = () => {
             professions={PROFESSIONS} 
             onSelectProfession={handleStartGame} 
             isLoading={appState.isLoading}
-            onNavigateToAgents={() => setView('agents')}
           />
         </motion.div>
       )}
@@ -784,7 +763,6 @@ const App: React.FC = () => {
               gameState={gameState}
               onSubmitAnswer={handleSubmitAnswer}
               onSubmitEventChoice={handleSubmitEventChoice}
-              onNavigateToAgents={() => setView('agents')}
             />
           )}
         </motion.div>

@@ -142,7 +142,6 @@ export type TaskFormatType =
   | 'text_answer' 
   | 'multiple_choice' 
   | 'fill_in_blank' 
-  | 'matching' 
   | 'code_review' 
   | 'prioritization';
 
@@ -157,10 +156,7 @@ export interface FillInBlank {
   placeholder: string;
 }
 
-export interface MatchingItem {
-  id: string;
-  text: string;
-}
+
 
 export interface CodeReviewBug {
   lineNumber: number;
@@ -173,6 +169,13 @@ export interface PrioritizationItem {
   order?: number;
 }
 
+export interface ValidationResult {
+  is_valid: boolean;
+  errors: string[];
+  warnings: string[];
+  repaired: boolean;
+}
+
 export interface WorkTask {
   id: string;
   title: string;
@@ -180,12 +183,13 @@ export interface WorkTask {
   requirements: string[];
   acceptanceCriteria: string[];
   difficulty: number;
-  status: 'pending' | 'in-progress' | 'completed';
+  status: 'pending' | 'in-progress' | 'completed' | 'failed';
   xpReward: number;
   dueDate?: string;
   createdAt: string;
   imageUrl?: string; // AI-generated task visualization
   formatType?: TaskFormatType;
+  validationStatus?: 'valid' | 'invalid' | 'repaired';
   
   // Multiple choice specific fields
   options?: MultipleChoiceOption[];
@@ -197,10 +201,7 @@ export interface WorkTask {
   blankText?: string; // Text with {blank_id} placeholders
   expectedAnswers?: Record<string, string>;
   
-  // Matching specific fields
-  matchingLeft?: MatchingItem[];
-  matchingRight?: MatchingItem[];
-  correctMatches?: Record<string, string>;
+
   
   // Code review specific fields
   code?: string;
@@ -238,7 +239,7 @@ export type MeetingType =
   | 'project_update'
   | 'feedback_session';
 
-export type MeetingStatus = 'scheduled' | 'in_progress' | 'completed';
+export type MeetingStatus = 'scheduled' | 'in_progress' | 'completed' | 'left_early';
 
 export type MeetingPriority = 'optional' | 'recommended' | 'required';
 
@@ -250,6 +251,26 @@ export interface MeetingParticipant {
   avatar_color: string;
 }
 
+export interface MeetingTopic {
+  id: string;
+  question: string;
+  context: string;
+  expected_points: string[];
+  ai_discussion_prompts?: string[];
+}
+
+export interface ConversationMessage {
+  id: string;
+  type: 'topic_intro' | 'ai_response' | 'player_response' | 'system' | 'player_turn';
+  participant_id?: string;
+  participant_name?: string;
+  participant_role?: string;
+  content: string;
+  timestamp: string;
+  sentiment?: 'positive' | 'neutral' | 'constructive' | 'challenging';
+  sequence_number?: number;
+}
+
 export interface Meeting {
   id: string;
   meeting_type: MeetingType;
@@ -259,11 +280,29 @@ export interface Meeting {
   priority: MeetingPriority;
   participants: MeetingParticipant[];
   estimated_duration_minutes: number;
+  duration_minutes?: number; // Alias for estimated_duration_minutes
   context: string;
   context_preview?: string;
+  topics: MeetingTopic[];
+  objective: string;
+  current_topic_index?: number;
+  responses?: any[];
+  conversation_history?: ConversationMessage[];
+  is_player_turn?: boolean;
+  is_processing?: boolean;
+  last_message_timestamp?: string;
   created_at?: string;
   started_at?: string;
   completed_at?: string;
+}
+
+export interface MeetingState {
+  meeting_data: Meeting;
+  conversation_history: ConversationMessage[];
+  current_topic_index: number;
+  is_player_turn: boolean;
+  is_processing: boolean;
+  meeting_complete: boolean;
 }
 
 export interface MeetingSummary {
@@ -299,4 +338,36 @@ export interface MeetingSummary {
   early_departure?: boolean;
   createdAt?: string;
   created_at?: string;
+}
+
+// Type guard functions for data filtering
+export function isWorkTask(item: any): item is WorkTask {
+  return (
+    typeof item === 'object' &&
+    item !== null &&
+    'title' in item &&
+    'description' in item &&
+    'requirements' in item &&
+    'acceptanceCriteria' in item &&
+    'difficulty' in item &&
+    'status' in item &&
+    'xpReward' in item &&
+    !('meeting_type' in item) &&
+    !('participants' in item) &&
+    !('estimated_duration_minutes' in item)
+  );
+}
+
+export function isMeeting(item: any): item is Meeting {
+  return (
+    typeof item === 'object' &&
+    item !== null &&
+    'meeting_type' in item &&
+    'participants' in item &&
+    'status' in item &&
+    'estimated_duration_minutes' in item &&
+    !('requirements' in item) &&
+    !('acceptanceCriteria' in item) &&
+    !('xpReward' in item)
+  );
 }

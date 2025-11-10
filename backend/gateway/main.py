@@ -7,11 +7,12 @@ Exposes endpoints for session management and agent invocation.
 
 import logging
 import uuid
+import random
 from datetime import datetime
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status, Depends, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, status, Depends, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import tempfile
@@ -25,6 +26,7 @@ from shared import model_config  # This configures Vertex AI/API key
 
 from agents.root_agent import root_agent
 from agents.workflow_orchestrator import WorkflowOrchestrator
+from agents.meeting_orchestrator import get_meeting_orchestrator
 from shared.firestore_manager import FirestoreManager
 from shared.config import PROJECT_ID, USE_VERTEX_AI
 from gateway.auth import get_current_user, optional_auth
@@ -53,6 +55,15 @@ async def lifespan(app: FastAPI):
     
     auth_method = "Vertex AI" if USE_VERTEX_AI else "Google AI API"
     logger.info(f"Starting backend with {auth_method} authentication")
+    
+    # Log CORS configuration for verification
+    logger.info("=" * 60)
+    logger.info("CORS Configuration:")
+    logger.info(f"  Allowed Origins: {allowed_origins}")
+    logger.info(f"  Allow Credentials: True")
+    logger.info(f"  Allow Methods: *")
+    logger.info(f"  Allow Headers: *")
+    logger.info("=" * 60)
     
     logger.info("Initializing Firestore client...")
     firestore_manager = FirestoreManager()
@@ -103,6 +114,36 @@ app.add_middleware(
 )
 
 
+# Add CORS debugging middleware
+@app.middleware("http")
+async def log_cors_headers(request, call_next):
+    """
+    Log CORS-related headers for debugging
+    """
+    origin = request.headers.get("origin", "No origin header")
+    method = request.method
+    path = request.url.path
+    
+    # Log incoming request details
+    logger.info(f"CORS Debug - Incoming: {method} {path} from origin: {origin}")
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Log outgoing CORS headers
+    cors_headers = {
+        key: value for key, value in response.headers.items() 
+        if key.lower().startswith("access-control-")
+    }
+    
+    if cors_headers:
+        logger.info(f"CORS Debug - Outgoing headers for {path}: {cors_headers}")
+    else:
+        logger.warning(f"CORS Debug - No CORS headers in response for {path}")
+    
+    return response
+
+
 # Request/Response Models
 class CreateSessionRequest(BaseModel):
     """Request model for creating a new session"""
@@ -143,6 +184,24 @@ async def health_check():
 async def health_check_head():
     """Health check HEAD endpoint for Cloud Run"""
     return {"status": "healthy"}
+
+
+@app.get("/metrics", status_code=status.HTTP_200_OK)
+async def get_metrics():
+    """
+    Get system metrics for monitoring
+    
+    Returns:
+        Comprehensive metrics including task generation and meeting conversation stats
+    """
+    from shared.metrics_tracker import get_metrics_tracker
+    
+    metrics_tracker = get_metrics_tracker()
+    
+    return {
+        "task_generation": metrics_tracker.get_task_generation_stats(),
+        "meeting_conversation": metrics_tracker.get_meeting_stats()
+    }
 
 
 logger.info("FastAPI application initialized")
@@ -1074,10 +1133,12 @@ async def accept_job_offer(
         # Add job to history
         firestore_manager.add_job_to_history(session_id, player_state["current_job"])
         
-        # Generate initial tasks and meetings (dynamic based on job level)
+        # Generate initial tasks and meetings IN PARALLEL (dynamic based on job level)
         import uuid
         import random
+        import asyncio
         generated_tasks = []
+        generated_meetings = []
         
         player_level = session_data.get("level", 1)
         job_level = job_data.get("level", "entry")
@@ -1087,67 +1148,107 @@ async def accept_job_offer(
             # Entry level: 2-3 tasks, 1 meeting
             num_tasks = random.randint(2, 3)
             num_meetings = 1
-            meeting_types = ["one_on_one", "team_meeting"]
+            meeting_types = ["team_standup", "one_on_one"]
         elif job_level == "mid":
             # Mid level: 3-4 tasks, 1-2 meetings
             num_tasks = random.randint(3, 4)
             num_meetings = random.randint(1, 2)
-            meeting_types = ["one_on_one", "team_meeting", "project_update"]
+            meeting_types = ["team_standup", "one_on_one", "project_review"]
         else:  # senior
             # Senior level: 4-5 tasks, 2-3 meetings
             num_tasks = random.randint(4, 5)
             num_meetings = random.randint(2, 3)
-            meeting_types = ["one_on_one", "team_meeting", "project_update", "stakeholder_presentation"]
+            meeting_types = ["team_standup", "one_on_one", "project_review", "stakeholder_presentation"]
         
-        logger.info(f"Generating {num_tasks} work tasks and {num_meetings} meetings for {job_level} level job")
+        logger.info(f"Generating {num_tasks} work tasks and {num_meetings} meetings IN PARALLEL for {job_level} level job")
         
-        # Generate work tasks
-        for i in range(num_tasks):
+        # Generate work tasks and meetings IN PARALLEL
+        async def generate_single_task(index: int):
             try:
+                logger.info(f"[Task Gen] Starting generation for task {index+1}/{num_tasks}")
                 task = await workflow_orchestrator.generate_task(
                     session_id=session_id,
                     job_title=job_data.get("position", ""),
                     company_name=job_data.get("company_name", ""),
                     player_level=player_level,
-                    tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0) + i
+                    tasks_completed=session_data.get("stats", {}).get("tasks_completed", 0) + index
                 )
                 
                 task_id = f"task-{uuid.uuid4().hex[:12]}"
                 task["id"] = task_id
                 task["task_type"] = "work"
                 
+                logger.info(f"[Task Gen] Task {index+1} generated: {task.get('title', 'Unknown')} (format: {task.get('format_type', 'unknown')})")
+                logger.info(f"[Task Gen] Creating task {task_id} in Firestore with status: {task.get('status', 'pending')}")
+                
                 firestore_manager.create_task(task_id, session_id, task)
-                generated_tasks.append(task)
+                
+                logger.info(f"[Task Gen] Task {task_id} successfully created in Firestore")
+                return task
             except Exception as e:
-                logger.error(f"Failed to generate work task {i+1}: {e}")
+                logger.error(f"[Task Gen] Failed to generate work task {index+1}: {e}", exc_info=True)
+                return None
         
-        # Generate meeting tasks
-        for i in range(num_meetings):
+        async def generate_single_meeting(index: int):
             meeting_type = random.choice(meeting_types)
             
             try:
-                meeting_task = await workflow_orchestrator.generate_meeting_as_task(
+                # Generate actual meeting object (not a task)
+                meeting_data = await workflow_orchestrator.generate_meeting(
                     session_id=session_id,
                     meeting_type=meeting_type,
                     job_title=job_data.get("position", ""),
                     company_name=job_data.get("company_name", ""),
                     player_level=player_level,
-                    recent_performance="new_hire" if i == 0 else "average"
+                    recent_performance="new_hire" if index == 0 else "average"
                 )
                 
-                meeting_task_id = f"task-{uuid.uuid4().hex[:12]}"
-                meeting_task["id"] = meeting_task_id
-                meeting_task["task_type"] = "meeting"
+                meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                meeting_data["id"] = meeting_id
+                meeting_data["status"] = "scheduled"
+                meeting_data["session_id"] = session_id
                 
-                firestore_manager.create_task(meeting_task_id, session_id, meeting_task)
-                generated_tasks.append(meeting_task)
+                # Normalize field names (AI might use duration_minutes instead of estimated_duration_minutes)
+                if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+                    meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
                 
-                logger.info(f"Generated meeting task {i+1}: {meeting_task.get('title', 'Meeting')}")
+                # Store meeting in Firestore
+                firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+                
+                logger.info(f"Generated meeting {index+1}: {meeting_data.get('title', 'Meeting')}")
+                return meeting_data
             except Exception as e:
-                logger.error(f"Failed to generate meeting task {i+1}: {e}")
-                # Continue without this meeting if it fails
+                logger.error(f"Failed to generate meeting {index+1}: {e}")
+                return None
         
-        logger.info(f"Job accepted, CV updated, and {len(generated_tasks)} tasks generated ({num_tasks} work + {num_meetings} meetings)")
+        # Run all generations in parallel
+        task_coroutines = [generate_single_task(i) for i in range(num_tasks)]
+        meeting_coroutines = [generate_single_meeting(i) for i in range(num_meetings)]
+        
+        # Execute all in parallel
+        all_results = await asyncio.gather(*task_coroutines, *meeting_coroutines, return_exceptions=True)
+        
+        # Separate tasks and meetings from results
+        generated_tasks = [r for r in all_results[:num_tasks] if r is not None and not isinstance(r, Exception)]
+        generated_meetings = [r for r in all_results[num_tasks:] if r is not None and not isinstance(r, Exception)]
+        
+        # Log detailed results
+        logger.info(f"[Task Gen] Generation complete: {len(generated_tasks)}/{num_tasks} tasks, {len(generated_meetings)}/{num_meetings} meetings")
+        
+        if len(generated_tasks) < num_tasks:
+            failed_tasks = num_tasks - len(generated_tasks)
+            logger.warning(f"[Task Gen] {failed_tasks} task(s) failed to generate")
+            
+        if len(generated_meetings) < num_meetings:
+            failed_meetings = num_meetings - len(generated_meetings)
+            logger.warning(f"[Task Gen] {failed_meetings} meeting(s) failed to generate")
+        
+        # Log task IDs for verification
+        if generated_tasks:
+            task_ids = [t.get('id', 'unknown') for t in generated_tasks]
+            logger.info(f"[Task Gen] Generated task IDs: {task_ids}")
+        
+        logger.info(f"Job accepted, CV updated, {len(generated_tasks)} tasks and {len(generated_meetings)} meetings generated IN PARALLEL")
         
         # Update stats
         stats = session_data.get("stats", {})
@@ -1158,7 +1259,8 @@ async def accept_job_offer(
             "success": True,
             "message": "Job offer accepted successfully",
             "player_state": player_state,
-            "tasks": generated_tasks
+            "tasks": generated_tasks,
+            "meetings": generated_meetings
         }
         
     except ValueError as e:
@@ -1196,7 +1298,7 @@ async def get_tasks(
         user_id: Optional authenticated user ID
         
     Returns:
-        Array of tasks with status
+        Array of tasks with status (filtered to exclude invalid data)
         
     Raises:
         HTTPException: If session not found or access denied
@@ -1214,7 +1316,28 @@ async def get_tasks(
         # Retrieve active tasks
         tasks = firestore_manager.get_active_tasks(session_id)
         
-        return {"tasks": tasks}
+        # Filter out any meetings that might have been stored as tasks
+        # Also filter out deprecated matching tasks
+        validated_tasks = []
+        for task in tasks:
+            # Skip deprecated matching tasks
+            if task.get('format_type') == 'matching':
+                logger.info(f"Filtering out deprecated matching task {task.get('id')} from session {session_id}")
+                continue
+                
+            is_valid, error_msg = firestore_manager.validate_task_data(task)
+            if is_valid:
+                validated_tasks.append(task)
+            else:
+                logger.warning(f"Found invalid task {task.get('id')} in session {session_id}: {error_msg}")
+                logger.warning(f"This item should be in meetings collection: {task}")
+        
+        # Log filtering summary if any invalid tasks were found
+        if len(validated_tasks) < len(tasks):
+            filtered_count = len(tasks) - len(validated_tasks)
+            logger.info(f"Filtered {filtered_count} invalid task(s) from {len(tasks)} total for session {session_id}")
+        
+        return {"tasks": validated_tasks}
         
     except ValueError:
         raise HTTPException(
@@ -1291,11 +1414,53 @@ async def submit_task(
         
         # Update task status
         firestore_manager.update_task(task_id, {
-            "status": "completed" if result["passed"] else "pending",
+            "status": "completed" if result["passed"] else "failed",
             "solution": request.solution,
             "score": result["score"],
-            "feedback": result["feedback"]
+            "feedback": result["feedback"],
+            "attempts": task_data.get("attempts", 0) + 1
         })
+        
+        # Check if task failed and should trigger a meeting
+        if not result["passed"]:
+            attempts = task_data.get("attempts", 0) + 1
+            
+            # If task failed 2+ times, trigger a feedback meeting
+            if attempts >= 2:
+                current_job = session_data.get("current_job", {})
+                if current_job:
+                    try:
+                        logger.info(f"Task {task_id} failed {attempts} times, triggering feedback meeting")
+                        
+                        meeting_data = await workflow_orchestrator.generate_meeting(
+                            session_id=session_id,
+                            meeting_type="feedback_session",
+                            job_title=current_job.get("position", ""),
+                            company_name=current_job.get("company_name", ""),
+                            player_level=session_data.get("level", 1),
+                            recent_performance="needs_improvement"
+                        )
+                        
+                        # Save meeting to Firestore
+                        meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                        meeting_data["id"] = meeting_id
+                        meeting_data["session_id"] = session_id
+                        meeting_data["status"] = "scheduled"
+                        meeting_data["trigger_reason"] = f"task_failure_{task_id}"
+                        
+                        # Normalize field names
+                        if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+                            meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
+                        
+                        firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+                        
+                        result["meeting_triggered"] = True
+                        result["meeting_id"] = meeting_id
+                        result["meeting_reason"] = "task_failure"
+                        
+                        logger.info(f"Feedback meeting triggered: {meeting_id} due to task failures")
+                    except Exception as e:
+                        logger.error(f"Failed to generate feedback meeting: {e}")
         
         # Award XP and check for level up
         if result["passed"]:
@@ -1343,6 +1508,10 @@ async def submit_task(
                         meeting_data["current_topic_index"] = 0
                         meeting_data["conversation_history"] = []
                         
+                        # Normalize field names
+                        if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+                            meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
+                        
                         firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
                         
                         # Update last meeting trigger
@@ -1359,21 +1528,81 @@ async def submit_task(
                         logger.error(f"Failed to generate meeting: {e}")
                         # Don't fail task submission if meeting generation fails
             
-            # Generate new task if needed
+            # Generate new tasks and meetings if dashboard is getting low
             active_tasks = firestore_manager.get_active_tasks(session_id)
-            if len(active_tasks) < 3:
-                new_task = await workflow_orchestrator.generate_task(
-                    session_id=session_id,
-                    job_title=session_data.get("current_job", {}).get("position", ""),
-                    company_name=session_data.get("current_job", {}).get("company_name", ""),
-                    player_level=result["new_level"],
-                    tasks_completed=tasks_completed
-                )
+            active_meetings = firestore_manager.get_active_meetings(session_id)
+            
+            # Target: 3-5 tasks and 1-2 meetings on dashboard
+            tasks_to_generate = max(0, 3 - len(active_tasks))
+            meetings_to_generate = max(0, 1 - len(active_meetings))
+            
+            new_tasks = []
+            new_meetings = []
+            
+            # Generate tasks if needed
+            if tasks_to_generate > 0:
+                logger.info(f"Dashboard low on tasks ({len(active_tasks)}), generating {tasks_to_generate} new tasks")
                 
-                new_task_id = f"task-{uuid.uuid4().hex[:12]}"
-                new_task["id"] = new_task_id
-                firestore_manager.create_task(new_task_id, session_id, new_task)
-                result["new_task"] = new_task
+                for i in range(tasks_to_generate):
+                    try:
+                        new_task = await workflow_orchestrator.generate_task(
+                            session_id=session_id,
+                            job_title=session_data.get("current_job", {}).get("position", ""),
+                            company_name=session_data.get("current_job", {}).get("company_name", ""),
+                            player_level=result["new_level"],
+                            tasks_completed=tasks_completed + i
+                        )
+                        
+                        new_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                        new_task["id"] = new_task_id
+                        new_task["task_type"] = "work"
+                        firestore_manager.create_task(new_task_id, session_id, new_task)
+                        new_tasks.append(new_task)
+                        logger.info(f"Generated task {i+1}/{tasks_to_generate}: {new_task.get('title')}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate task {i+1}: {e}")
+            
+            # Generate meetings if needed (occasionally)
+            if meetings_to_generate > 0 and random.random() < 0.5:  # 50% chance
+                logger.info(f"Dashboard low on meetings ({len(active_meetings)}), generating {meetings_to_generate} new meetings")
+                
+                current_job = session_data.get("current_job", {})
+                if current_job:
+                    for i in range(meetings_to_generate):
+                        try:
+                            # Determine meeting type based on recent activity
+                            meeting_types = ["one_on_one", "team_meeting", "project_update"]
+                            meeting_type = random.choice(meeting_types)
+                            
+                            meeting_data = await workflow_orchestrator.generate_meeting(
+                                session_id=session_id,
+                                meeting_type=meeting_type,
+                                job_title=current_job.get("position", ""),
+                                company_name=current_job.get("company_name", ""),
+                                player_level=result["new_level"],
+                                recent_performance="good"
+                            )
+                            
+                            meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                            meeting_data["id"] = meeting_id
+                            meeting_data["session_id"] = session_id
+                            meeting_data["status"] = "scheduled"
+                            
+                            # Normalize field names
+                            if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+                                meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
+                            
+                            firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
+                            new_meetings.append(meeting_data)
+                            logger.info(f"Generated meeting {i+1}/{meetings_to_generate}: {meeting_data.get('title')}")
+                        except Exception as e:
+                            logger.error(f"Failed to generate meeting {i+1}: {e}")
+            
+            # Add to result
+            if new_tasks:
+                result["new_tasks"] = new_tasks
+            if new_meetings:
+                result["new_meetings"] = new_meetings
             
             # Update CV with accomplishment
             current_cv = session_data.get("cv_data", {"experience": [], "skills": []})
@@ -1776,6 +2005,10 @@ async def submit_task_voice_solution(
                             meeting_data["current_topic_index"] = 0
                             meeting_data["conversation_history"] = []
                             
+                            # Normalize field names
+                            if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+                                meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
+                            
                             firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
                             
                             # Update last meeting trigger
@@ -1862,7 +2095,7 @@ class GenerateMeetingRequest(BaseModel):
 @app.get("/sessions/{session_id}/meetings")
 async def get_meetings(
     session_id: str,
-    status: Optional[str] = None,
+    meeting_status: Optional[str] = None,
     user_id: Optional[str] = Depends(optional_auth)
 ):
     """
@@ -1870,11 +2103,11 @@ async def get_meetings(
     
     Args:
         session_id: Unique session identifier
-        status: Optional filter by status (scheduled, in_progress, completed)
+        meeting_status: Optional filter by status (scheduled, in_progress, completed)
         user_id: Optional authenticated user ID
         
     Returns:
-        Array of meetings (scheduled, in-progress, completed)
+        Array of meetings (scheduled, in-progress, completed, filtered to exclude invalid data)
         
     Raises:
         HTTPException: If session not found or access denied
@@ -1890,9 +2123,24 @@ async def get_meetings(
             )
         
         # Retrieve meetings from Firestore
-        meetings = firestore_manager.get_meetings_by_session(session_id, status=status)
+        meetings = firestore_manager.get_meetings_by_session(session_id, status=meeting_status)
         
-        return {"meetings": meetings}
+        # Filter out any tasks that might have been stored as meetings
+        validated_meetings = []
+        for meeting in meetings:
+            is_valid, error_msg = firestore_manager.validate_meeting_data(meeting)
+            if is_valid:
+                validated_meetings.append(meeting)
+            else:
+                logger.warning(f"Found invalid meeting {meeting.get('id')} in session {session_id}: {error_msg}")
+                logger.warning(f"This item should be in tasks collection: {meeting}")
+        
+        # Log filtering summary if any invalid meetings were found
+        if len(validated_meetings) < len(meetings):
+            filtered_count = len(meetings) - len(validated_meetings)
+            logger.info(f"Filtered {filtered_count} invalid meeting(s) from {len(meetings)} total for session {session_id}")
+        
+        return {"meetings": validated_meetings}
         
     except ValueError:
         raise HTTPException(
@@ -1983,6 +2231,10 @@ async def generate_meeting(
         meeting_data["status"] = "active"
         meeting_data["responses"] = []
         meeting_data["current_topic_index"] = 0
+        
+        # Normalize field names
+        if "duration_minutes" in meeting_data and "estimated_duration_minutes" not in meeting_data:
+            meeting_data["estimated_duration_minutes"] = meeting_data.pop("duration_minutes")
         
         firestore_manager.create_meeting(meeting_id, session_id, meeting_data)
         
@@ -2078,16 +2330,26 @@ async def join_meeting(
     """
     Join a scheduled meeting
     
+    This endpoint initializes the meeting state in Firestore if it's the first join,
+    generates the initial AI discussion using MeetingOrchestrator, and returns the
+    meeting state with conversation history. It sets appropriate status and turn flags.
+    
     Args:
         session_id: Unique session identifier
         meeting_id: Unique meeting identifier
         user_id: Optional authenticated user ID
         
     Returns:
-        Initial meeting state with first topic and AI discussion
+        Dictionary containing:
+            - meeting_id: Meeting identifier
+            - status: Meeting status (in_progress)
+            - current_topic_index: Current topic index
+            - conversation_history: List of conversation messages
+            - is_player_turn: Boolean indicating if it's player's turn
+            - meeting_data: Full meeting data for UI display
         
     Raises:
-        HTTPException: If session or meeting not found, or meeting already started
+        HTTPException: If session or meeting not found, or meeting already completed
     """
     try:
         # Verify session exists and user has access
@@ -2099,6 +2361,10 @@ async def join_meeting(
                 detail="You do not have access to this session"
             )
         
+        # Use MeetingStateManager for state operations
+        from shared.meeting_state_manager import MeetingStateManager
+        state_manager = MeetingStateManager()
+        
         # Retrieve meeting from Firestore
         meeting_data = firestore_manager.get_meeting(meeting_id)
         
@@ -2109,7 +2375,7 @@ async def join_meeting(
                 detail="Meeting does not belong to this session"
             )
         
-        # Check if meeting is already in progress or completed
+        # Check if meeting is already completed
         current_status = meeting_data.get("status", "scheduled")
         if current_status == "completed":
             raise HTTPException(
@@ -2117,74 +2383,56 @@ async def join_meeting(
                 detail="Meeting has already been completed"
             )
         
-        logger.info(f"Joining meeting {meeting_id} for session {session_id}")
+        logger.info(f"Joining meeting {meeting_id} for session {session_id}, current status: {current_status}")
         
-        # Update status to in_progress
-        firestore_manager.update_meeting_status(meeting_id, "in_progress")
+        # Check if this is the first join (meeting is scheduled or has no conversation history)
+        conversation_history = meeting_data.get("conversation_history", [])
+        is_first_join = current_status == "scheduled" or len(conversation_history) == 0
         
-        # Initialize conversation with first topic
-        topics = meeting_data.get("topics", [])
-        if not topics:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Meeting has no topics"
-            )
-        
-        first_topic = topics[0]
-        
-        # Generate initial AI discussion for the first topic
-        conversation_history = []
-        
-        # Add topic introduction
-        topic_intro = {
-            "id": f"msg-{uuid.uuid4().hex[:8]}",
-            "type": "topic_intro",
-            "content": f"Let's discuss: {first_topic.get('question', '')}",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        conversation_history.append(topic_intro)
-        
-        # Generate AI participant discussion
-        participants = meeting_data.get("participants", [])
-        for participant in participants[:2]:  # First 2 AI participants discuss
-            if participant.get("role") != "Player":
-                ai_message = await workflow_orchestrator.generate_meeting_response(
-                    session_id=session_id,
-                    meeting_context=meeting_data.get("context", ""),
-                    current_topic=first_topic.get("question", ""),
-                    participant_name=participant.get("name", ""),
-                    participant_role=participant.get("role", ""),
-                    participant_personality=participant.get("personality", ""),
-                    player_response=""  # Initial discussion, no player response yet
+        if is_first_join:
+            # Initialize conversation with first topic
+            topics = meeting_data.get("topics", [])
+            if not topics:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Meeting has no topics"
                 )
-                
-                conversation_msg = {
-                    "id": f"msg-{uuid.uuid4().hex[:8]}",
-                    "type": "ai_response",
-                    "participant_id": participant.get("id", ""),
-                    "participant_name": participant.get("name", ""),
-                    "participant_role": participant.get("role", ""),
-                    "content": ai_message.get("response", ""),
-                    "sentiment": ai_message.get("sentiment", "neutral"),
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                conversation_history.append(conversation_msg)
+            
+            # Update status to in_progress
+            state_manager.update_meeting_status(meeting_id, "in_progress")
+            
+            # Use MeetingOrchestrator to start the first topic discussion
+            orchestrator = get_meeting_orchestrator()
+            messages = await orchestrator.start_topic_discussion(
+                meeting_id=meeting_id,
+                topic_index=0
+            )
+            
+            logger.info(f"Meeting {meeting_id} started with {len(messages)} initial messages")
+        else:
+            # Rejoining an in-progress meeting - just return current state
+            logger.info(f"Rejoining in-progress meeting {meeting_id}")
         
-        # Update meeting with conversation history
-        firestore_manager.update_meeting(meeting_id, {
-            "status": "in_progress",
-            "conversation_history": conversation_history,
-            "started_at": datetime.utcnow().isoformat()
-        })
-        
-        logger.info(f"Meeting {meeting_id} started with {len(conversation_history)} initial messages")
+        # Get updated meeting state
+        meeting_state = state_manager.get_meeting_state(meeting_id)
         
         return {
             "meeting_id": meeting_id,
-            "status": "in_progress",
-            "current_topic_index": 0,
-            "conversation_history": conversation_history,
-            "is_player_turn": True
+            "status": meeting_state.get("status", "in_progress"),
+            "current_topic_index": meeting_state.get("current_topic_index", 0),
+            "conversation_history": meeting_state.get("conversation_history", []),
+            "is_player_turn": meeting_state.get("is_player_turn", False),
+            "meeting_data": {
+                "id": meeting_id,
+                "meeting_type": meeting_state.get("meeting_type", ""),
+                "title": meeting_state.get("title", ""),
+                "context": meeting_state.get("context", ""),
+                "participants": meeting_state.get("participants", []),
+                "topics": meeting_state.get("topics", []),
+                "objective": meeting_state.get("objective", ""),
+                "estimated_duration_minutes": meeting_state.get("estimated_duration_minutes", 30),
+                "priority": meeting_state.get("priority", "medium")
+            }
         }
         
     except ValueError as e:
@@ -2215,6 +2463,101 @@ class RespondToMeetingRequest(BaseModel):
     response: str = Field(..., description="Player's response to the topic")
 
 
+@app.post("/sessions/{session_id}/meetings/{meeting_id}/topics/{topic_index}/start")
+async def start_meeting_topic(
+    session_id: str,
+    meeting_id: str,
+    topic_index: int,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Start a new topic in an ongoing meeting
+    
+    This endpoint is called by the frontend to start a new topic after the previous
+    topic is complete. It generates the topic introduction and initial AI discussion.
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        topic_index: Index of the topic to start (0-based)
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Dictionary containing:
+            - messages: List of messages (topic intro + AI discussion)
+            - current_topic_index: Updated topic index
+            - is_player_turn: Boolean indicating if it's player's turn
+        
+    Raises:
+        HTTPException: If session/meeting not found or topic start fails
+    """
+    try:
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Use MeetingStateManager for state operations
+        from shared.meeting_state_manager import MeetingStateManager
+        state_manager = MeetingStateManager()
+        
+        # Retrieve meeting from Firestore
+        meeting_data = state_manager.get_meeting_state(meeting_id)
+        
+        # Verify meeting belongs to this session
+        if meeting_data.get("session_id") != session_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Meeting does not belong to this session"
+            )
+        
+        # Validate topic index
+        topics = meeting_data.get("topics", [])
+        if topic_index < 0 or topic_index >= len(topics):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid topic index {topic_index}"
+            )
+        
+        logger.info(f"Starting topic {topic_index} for meeting {meeting_id}")
+        
+        # Use MeetingOrchestrator to start the topic discussion
+        orchestrator = get_meeting_orchestrator()
+        messages = await orchestrator.start_topic_discussion(
+            meeting_id=meeting_id,
+            topic_index=topic_index
+        )
+        
+        # Get updated meeting state
+        updated_meeting = state_manager.get_meeting_state(meeting_id)
+        
+        logger.info(f"Topic {topic_index} started with {len(messages)} messages")
+        
+        return {
+            "messages": messages,
+            "current_topic_index": updated_meeting.get("current_topic_index", topic_index),
+            "is_player_turn": updated_meeting.get("is_player_turn", False)
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start topic {topic_index}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start topic: {str(e)}"
+        )
+
+
 @app.post("/sessions/{session_id}/meetings/{meeting_id}/respond")
 async def respond_to_meeting(
     session_id: str,
@@ -2225,6 +2568,11 @@ async def respond_to_meeting(
     """
     Submit a response to a meeting topic and get AI colleague responses
     
+    This endpoint stores the player response in Firestore, generates AI reactions
+    using MeetingOrchestrator, updates meeting state (topic index, turn flags),
+    and returns the updated conversation state. It handles meeting completion
+    when all topics are finished.
+    
     Args:
         session_id: Unique session identifier
         meeting_id: Unique meeting identifier
@@ -2232,7 +2580,14 @@ async def respond_to_meeting(
         user_id: Optional authenticated user ID
         
     Returns:
-        AI colleague responses and evaluation
+        Dictionary containing:
+            - ai_responses: List of AI colleague responses (legacy format)
+            - evaluation: Player response evaluation with score and feedback
+            - next_topic_index: Index of next topic (if any)
+            - meeting_complete: Boolean indicating if meeting is done
+            - topic_complete: Boolean indicating if current topic is done
+            - conversation_history: Updated conversation history
+            - is_player_turn: Boolean indicating if it's player's turn
         
     Raises:
         HTTPException: If session or meeting not found, or response fails
@@ -2247,8 +2602,12 @@ async def respond_to_meeting(
                 detail="You do not have access to this session"
             )
         
+        # Use MeetingStateManager for state operations
+        from shared.meeting_state_manager import MeetingStateManager
+        state_manager = MeetingStateManager()
+        
         # Retrieve meeting from Firestore
-        meeting_data = firestore_manager.get_meeting(meeting_id)
+        meeting_data = state_manager.get_meeting_state(meeting_id)
         
         # Verify meeting belongs to this session
         if meeting_data.get("session_id") != session_id:
@@ -2273,22 +2632,22 @@ async def respond_to_meeting(
         
         logger.info(f"Processing response to topic {request.topic_id} in meeting {meeting_id}")
         
-        # Generate AI colleague responses
-        participants = meeting_data.get("participants", [])
-        ai_responses = []
+        # Use MeetingOrchestrator to process player response
+        orchestrator = get_meeting_orchestrator()
+        result = await orchestrator.process_player_response(
+            meeting_id=meeting_id,
+            topic_id=request.topic_id,
+            response=request.response
+        )
         
-        for participant in participants:
-            if participant.get("role") != "Player":
-                colleague_response = await workflow_orchestrator.generate_meeting_response(
-                    session_id=session_id,
-                    meeting_context=meeting_data.get("context", ""),
-                    current_topic=topic_data.get("question", ""),
-                    participant_name=participant.get("name", ""),
-                    participant_role=participant.get("role", ""),
-                    participant_personality=participant.get("personality", ""),
-                    player_response=request.response
-                )
-                ai_responses.append(colleague_response)
+        # Convert AI messages to legacy format for compatibility
+        ai_responses = []
+        for ai_msg in result['ai_messages']:
+            ai_responses.append({
+                "participant_name": ai_msg.get("participant_name", ""),
+                "response": ai_msg.get("content", ""),
+                "sentiment": ai_msg.get("sentiment", "neutral")
+            })
         
         # Grade the player's response
         evaluation = await workflow_orchestrator.grade_meeting_response(
@@ -2298,7 +2657,7 @@ async def respond_to_meeting(
             player_level=session_data.get("level", 1)
         )
         
-        # Store response in meeting data
+        # Store response in meeting data for legacy compatibility
         response_record = {
             "topic_id": request.topic_id,
             "player_response": request.response,
@@ -2310,20 +2669,33 @@ async def respond_to_meeting(
         meeting_responses = meeting_data.get("responses", [])
         meeting_responses.append(response_record)
         
-        # Update current topic index
-        current_index = meeting_data.get("current_topic_index", 0)
         firestore_manager.update_meeting(meeting_id, {
-            "responses": meeting_responses,
-            "current_topic_index": current_index + 1
+            "responses": meeting_responses
         })
         
-        logger.info(f"Meeting response processed: score={evaluation.get('score', 0)}")
+        # REMOVED: Auto-start next topic
+        # The frontend now controls topic transitions for better UX and simpler flow.
+        # Frontend will display AI reactions sequentially, then transition to next topic
+        # and call backend to start it when ready.
+        # This eliminates the need for polling and makes the system more predictable.
+        
+        # Get updated meeting state
+        updated_meeting = state_manager.get_meeting_state(meeting_id)
+        
+        logger.info(
+            f"Meeting response processed: score={evaluation.get('score', 0)}, "
+            f"topic_complete={result['topic_complete']}, meeting_complete={result['meeting_complete']}"
+        )
         
         return {
             "ai_responses": ai_responses,
             "evaluation": evaluation,
-            "next_topic_index": current_index + 1,
-            "meeting_complete": (current_index + 1) >= len(topics)
+            "next_topic_index": result.get('next_topic_index'),
+            "meeting_complete": result['meeting_complete'],
+            "topic_complete": result['topic_complete'],
+            "conversation_history": updated_meeting.get("conversation_history", []),
+            "is_player_turn": updated_meeting.get("is_player_turn", False),
+            "current_topic_index": updated_meeting.get("current_topic_index", 0)
         }
         
     except ValueError as e:
@@ -2348,6 +2720,115 @@ async def respond_to_meeting(
         )
 
 
+@app.get("/sessions/{session_id}/meetings/{meeting_id}/messages")
+async def get_meeting_messages(
+    session_id: str,
+    meeting_id: str,
+    since: Optional[str] = None,
+    user_id: Optional[str] = Depends(optional_auth)
+):
+    """
+    Get new meeting messages since a specific message ID (for live polling)
+    
+    This endpoint supports the polling mechanism for real-time meeting updates.
+    It queries Firestore for messages after the specified ID and returns them
+    in chronological order, including "player_turn" signal messages.
+    
+    Args:
+        session_id: Unique session identifier
+        meeting_id: Unique meeting identifier
+        since: Optional message ID to get messages after (for polling)
+        user_id: Optional authenticated user ID
+        
+    Returns:
+        Dictionary containing:
+            - messages: List of new conversation messages in chronological order
+            - is_player_turn: Boolean indicating if it's the player's turn
+        
+    Raises:
+        HTTPException: If session or meeting not found, or access denied
+    """
+    try:
+        logger.info(
+            f"🔍 Polling request: session={session_id}, meeting={meeting_id}, since={since}"
+        )
+        
+        # Verify session exists and user has access
+        session_data = firestore_manager.get_session(session_id)
+        
+        if user_id and session_data.get("user_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this session"
+            )
+        
+        # Use MeetingStateManager to get messages
+        from shared.meeting_state_manager import MeetingStateManager
+        state_manager = MeetingStateManager()
+        
+        try:
+            # Get messages since the specified message ID
+            new_messages = state_manager.get_messages_since(meeting_id, since)
+            
+            logger.info(
+                f"📨 Found {len(new_messages)} messages for meeting {meeting_id}"
+            )
+            
+            # Get current meeting state for player turn flag
+            meeting_state = state_manager.get_meeting_state(meeting_id)
+            
+            # Verify meeting belongs to this session
+            if meeting_state.get("session_id") != session_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Meeting does not belong to this session"
+                )
+            
+            is_player_turn = meeting_state.get("is_player_turn", False)
+            
+            logger.info(
+                f"✅ Retrieved {len(new_messages)} new messages for meeting {meeting_id} "
+                f"(since: {since or 'start'}, is_player_turn: {is_player_turn})"
+            )
+            
+            # Log message details for debugging
+            if new_messages:
+                logger.info(f"📋 Message types: {[msg.get('type') for msg in new_messages]}")
+            
+            return {
+                "messages": new_messages,
+                "is_player_turn": is_player_turn
+            }
+            
+        except ValueError as e:
+            # Meeting not found
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+        
+    except ValueError as e:
+        error_msg = str(e)
+        if "Session" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Meeting {meeting_id} not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get meeting messages for {meeting_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get meeting messages: {str(e)}"
+        )
+
+
 @app.post("/sessions/{session_id}/meetings/{meeting_id}/leave")
 async def leave_meeting(
     session_id: str,
@@ -2357,16 +2838,30 @@ async def leave_meeting(
     """
     Leave a meeting early
     
+    This endpoint marks the meeting as "left_early" in Firestore, calculates and
+    awards partial XP based on progress, generates a meeting summary, and updates
+    player state with meeting statistics.
+    
     Args:
         session_id: Unique session identifier
         meeting_id: Unique meeting identifier
         user_id: Optional authenticated user ID
         
     Returns:
-        Partial meeting summary with reduced XP
+        Dictionary containing:
+            - success: Boolean indicating success
+            - early_departure: Boolean (always True)
+            - overall_score: Average score from completed topics
+            - xp_gained: Partial XP awarded (50% of normal)
+            - new_xp: Updated player XP
+            - new_level: Updated player level
+            - level_up: Boolean indicating if player leveled up
+            - xp_to_next_level: XP needed for next level
+            - message: Feedback message
+            - summary: Meeting summary text
         
     Raises:
-        HTTPException: If session or meeting not found
+        HTTPException: If session or meeting not found, or meeting already completed
     """
     try:
         # Verify session exists and user has access
@@ -2378,8 +2873,12 @@ async def leave_meeting(
                 detail="You do not have access to this session"
             )
         
+        # Use MeetingStateManager for state operations
+        from shared.meeting_state_manager import MeetingStateManager
+        state_manager = MeetingStateManager()
+        
         # Retrieve meeting from Firestore
-        meeting_data = firestore_manager.get_meeting(meeting_id)
+        meeting_data = state_manager.get_meeting_state(meeting_id)
         
         # Verify meeting belongs to this session
         if meeting_data.get("session_id") != session_id:
@@ -2389,15 +2888,16 @@ async def leave_meeting(
             )
         
         # Check if meeting is already completed
-        if meeting_data.get("status") == "completed":
+        current_status = meeting_data.get("status", "scheduled")
+        if current_status == "completed" or current_status == "left_early":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Meeting has already been completed"
+                detail="Meeting has already been completed or left"
             )
         
         logger.info(f"Player leaving meeting {meeting_id} early")
         
-        # Calculate partial score
+        # Calculate partial score based on responses so far
         responses = meeting_data.get("responses", [])
         total_score = 0
         for response in responses:
@@ -2406,32 +2906,58 @@ async def leave_meeting(
         
         overall_score = total_score / len(responses) if responses else 0
         
-        # Award reduced XP (50% of normal)
+        # Calculate topics completed
+        current_topic_index = meeting_data.get("current_topic_index", 0)
+        total_topics = len(meeting_data.get("topics", []))
+        topics_completed = len(responses)
+        completion_percentage = (topics_completed / total_topics * 100) if total_topics > 0 else 0
+        
+        # Award reduced XP (50% of normal, scaled by completion)
         meeting_type = meeting_data.get("meeting_type", "one_on_one")
         base_xp = {
             "one_on_one": 20,
             "team_meeting": 30,
+            "team_standup": 25,
             "stakeholder_presentation": 50,
             "performance_review": 40,
+            "project_review": 35,
             "project_update": 30,
             "feedback_session": 25
         }.get(meeting_type, 30)
         
+        # XP calculation: base * score_multiplier * completion_multiplier * early_departure_penalty
         xp_multiplier = 0.5 + (overall_score / 100)
+        completion_multiplier = completion_percentage / 100
         full_xp = int(base_xp * xp_multiplier)
-        partial_xp = int(full_xp * 0.5)  # 50% for early departure
+        partial_xp = int(full_xp * completion_multiplier * 0.5)  # 50% penalty for early departure
+        
+        # Ensure minimum XP of 5 if any topics were completed
+        if topics_completed > 0 and partial_xp < 5:
+            partial_xp = 5
         
         # Award partial XP
         xp_result = firestore_manager.add_xp(session_id, partial_xp)
         
-        # Update meeting status
+        # Mark meeting as left early using MeetingStateManager
+        state_manager.mark_meeting_left_early(meeting_id)
+        
+        # Update meeting with additional data
         firestore_manager.update_meeting(meeting_id, {
-            "status": "completed",
             "overall_score": overall_score,
             "xp_gained": partial_xp,
-            "completed_at": datetime.utcnow().isoformat(),
-            "early_departure": True
+            "early_departure": True,
+            "topics_completed": topics_completed,
+            "completion_percentage": completion_percentage
         })
+        
+        # Generate meeting summary
+        summary = (
+            f"You left the meeting after completing {topics_completed} of {total_topics} topics "
+            f"({int(completion_percentage)}% complete). "
+        )
+        if overall_score > 0:
+            summary += f"Your average score was {int(overall_score)}/100. "
+        summary += f"You earned {partial_xp} XP (partial credit for early departure)."
         
         # Track meeting stats (even for early departure)
         meeting_performance = {
@@ -2441,6 +2967,8 @@ async def leave_meeting(
             "xp_gained": partial_xp,
             "tasks_generated": 0,
             "early_departure": True,
+            "topics_completed": topics_completed,
+            "total_topics": total_topics,
             "date": datetime.utcnow().isoformat()
         }
         
@@ -2464,7 +2992,84 @@ async def leave_meeting(
             "stats": stats
         })
         
-        logger.info(f"Meeting left early: partial_xp={partial_xp}, meetings_attended={meetings_attended}")
+        logger.info(
+            f"Meeting left early: partial_xp={partial_xp}, "
+            f"topics_completed={topics_completed}/{total_topics}, "
+            f"meetings_attended={meetings_attended}"
+        )
+        
+        # Generate new tasks and meetings if dashboard is getting low
+        active_tasks = firestore_manager.get_active_tasks(session_id)
+        active_meetings = firestore_manager.get_active_meetings(session_id)
+        
+        # Target: 3-5 tasks and 1-2 meetings on dashboard
+        tasks_to_generate = max(0, 3 - len(active_tasks))
+        meetings_to_generate = max(0, 1 - len(active_meetings))
+        
+        new_tasks_generated = []
+        new_meetings_generated = []
+        
+        # Generate tasks if needed
+        if tasks_to_generate > 0:
+            logger.info(f"Dashboard low on tasks ({len(active_tasks)}), generating {tasks_to_generate} new tasks")
+            
+            current_tasks_completed = session_data.get("stats", {}).get("tasks_completed", 0)
+            current_job = session_data.get("current_job", {})
+            
+            for i in range(tasks_to_generate):
+                try:
+                    new_task = await workflow_orchestrator.generate_task(
+                        session_id=session_id,
+                        job_title=current_job.get("position", ""),
+                        company_name=current_job.get("company_name", ""),
+                        player_level=xp_result["new_level"],
+                        tasks_completed=current_tasks_completed + i
+                    )
+                    
+                    new_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                    new_task["id"] = new_task_id
+                    new_task["task_type"] = "work"
+                    firestore_manager.create_task(new_task_id, session_id, new_task)
+                    new_tasks_generated.append(new_task)
+                    logger.info(f"Generated task {i+1}/{tasks_to_generate}: {new_task.get('title')}")
+                except Exception as e:
+                    logger.error(f"Failed to generate task {i+1}: {e}")
+        
+        # Generate meetings if needed (occasionally)
+        if meetings_to_generate > 0 and random.random() < 0.5:  # 50% chance
+            logger.info(f"Dashboard low on meetings ({len(active_meetings)}), generating {meetings_to_generate} new meetings")
+            
+            current_job = session_data.get("current_job", {})
+            if current_job:
+                for i in range(meetings_to_generate):
+                    try:
+                        # Determine meeting type based on recent activity
+                        meeting_types = ["one_on_one", "team_meeting", "project_update"]
+                        meeting_type = random.choice(meeting_types)
+                        
+                        new_meeting_data = await workflow_orchestrator.generate_meeting(
+                            session_id=session_id,
+                            meeting_type=meeting_type,
+                            job_title=current_job.get("position", ""),
+                            company_name=current_job.get("company_name", ""),
+                            player_level=xp_result["new_level"],
+                            recent_performance="good"
+                        )
+                        
+                        new_meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                        new_meeting_data["id"] = new_meeting_id
+                        new_meeting_data["session_id"] = session_id
+                        new_meeting_data["status"] = "scheduled"
+                        
+                        # Normalize field names
+                        if "duration_minutes" in new_meeting_data and "estimated_duration_minutes" not in new_meeting_data:
+                            new_meeting_data["estimated_duration_minutes"] = new_meeting_data.pop("duration_minutes")
+                        
+                        firestore_manager.create_meeting(new_meeting_id, session_id, new_meeting_data)
+                        new_meetings_generated.append(new_meeting_data)
+                        logger.info(f"Generated meeting {i+1}/{meetings_to_generate}: {new_meeting_data.get('title')}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate meeting {i+1}: {e}")
         
         return {
             "success": True,
@@ -2475,7 +3080,11 @@ async def leave_meeting(
             "new_level": xp_result["new_level"],
             "level_up": xp_result["leveled_up"],
             "xp_to_next_level": xp_result["xp_to_next_level"],
-            "message": "You left the meeting early. Partial XP awarded."
+            "message": "You left the meeting early. Partial XP awarded.",
+            "summary": summary,
+            "topics_completed": topics_completed,
+            "total_topics": total_topics,
+            "completion_percentage": int(completion_percentage)
         }
         
     except ValueError as e:
@@ -2692,6 +3301,79 @@ async def complete_meeting(
             f"Meeting completed: score={outcomes.get('participation_score')}, "
             f"xp_gained={xp_gained}, tasks_generated={len(generated_tasks)}"
         )
+        
+        # Generate new tasks and meetings if dashboard is getting low
+        active_tasks = firestore_manager.get_active_tasks(session_id)
+        active_meetings = firestore_manager.get_active_meetings(session_id)
+        
+        # Target: 3-5 tasks and 1-2 meetings on dashboard
+        tasks_to_generate = max(0, 3 - len(active_tasks))
+        meetings_to_generate = max(0, 1 - len(active_meetings))
+        
+        new_tasks_generated = []
+        new_meetings_generated = []
+        
+        # Generate tasks if needed
+        if tasks_to_generate > 0:
+            logger.info(f"Dashboard low on tasks ({len(active_tasks)}), generating {tasks_to_generate} new tasks")
+            
+            current_tasks_completed = session_data.get("stats", {}).get("tasks_completed", 0)
+            current_job = session_data.get("current_job", {})
+            
+            for i in range(tasks_to_generate):
+                try:
+                    new_task = await workflow_orchestrator.generate_task(
+                        session_id=session_id,
+                        job_title=current_job.get("position", ""),
+                        company_name=current_job.get("company_name", ""),
+                        player_level=xp_result["new_level"],
+                        tasks_completed=current_tasks_completed + i
+                    )
+                    
+                    new_task_id = f"task-{uuid.uuid4().hex[:12]}"
+                    new_task["id"] = new_task_id
+                    new_task["task_type"] = "work"
+                    firestore_manager.create_task(new_task_id, session_id, new_task)
+                    new_tasks_generated.append(new_task)
+                    logger.info(f"Generated task {i+1}/{tasks_to_generate}: {new_task.get('title')}")
+                except Exception as e:
+                    logger.error(f"Failed to generate task {i+1}: {e}")
+        
+        # Generate meetings if needed (occasionally)
+        if meetings_to_generate > 0 and random.random() < 0.5:  # 50% chance
+            logger.info(f"Dashboard low on meetings ({len(active_meetings)}), generating {meetings_to_generate} new meetings")
+            
+            current_job = session_data.get("current_job", {})
+            if current_job:
+                for i in range(meetings_to_generate):
+                    try:
+                        # Determine meeting type based on recent activity
+                        meeting_types = ["one_on_one", "team_meeting", "project_update"]
+                        meeting_type = random.choice(meeting_types)
+                        
+                        new_meeting_data = await workflow_orchestrator.generate_meeting(
+                            session_id=session_id,
+                            meeting_type=meeting_type,
+                            job_title=current_job.get("position", ""),
+                            company_name=current_job.get("company_name", ""),
+                            player_level=xp_result["new_level"],
+                            recent_performance="good"
+                        )
+                        
+                        new_meeting_id = f"meeting-{uuid.uuid4().hex[:12]}"
+                        new_meeting_data["id"] = new_meeting_id
+                        new_meeting_data["session_id"] = session_id
+                        new_meeting_data["status"] = "scheduled"
+                        
+                        # Normalize field names
+                        if "duration_minutes" in new_meeting_data and "estimated_duration_minutes" not in new_meeting_data:
+                            new_meeting_data["estimated_duration_minutes"] = new_meeting_data.pop("duration_minutes")
+                        
+                        firestore_manager.create_meeting(new_meeting_id, session_id, new_meeting_data)
+                        new_meetings_generated.append(new_meeting_data)
+                        logger.info(f"Generated meeting {i+1}/{meetings_to_generate}: {new_meeting_data.get('title')}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate meeting {i+1}: {e}")
         
         # Return comprehensive meeting summary
         return {

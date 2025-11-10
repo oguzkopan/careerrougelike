@@ -303,11 +303,107 @@ class FirestoreManager:
         except Exception as e:
             raise Exception(f"Failed to update job {job_id}: {str(e)}")
     
+    # ==================== Data Validation Methods ====================
+    
+    def validate_task_data(self, task_data: Dict[str, Any]) -> tuple[bool, str]:
+        """
+        Validate that data is a proper task, not a meeting.
+        
+        Checks for:
+        - Meeting-specific fields that shouldn't be in tasks
+        - Required task fields
+        - Meeting-like keywords in title/description
+        
+        Args:
+            task_data: Task data dictionary to validate
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+            - is_valid: True if data is a valid task, False otherwise
+            - error_message: Empty string if valid, error description if invalid
+        """
+        # Check for meeting-specific fields that shouldn't be in tasks
+        meeting_fields = [
+            'meeting_type', 'participants', 'estimated_duration_minutes',
+            'context_preview', 'scheduled_time', 'topics', 'conversation_history',
+            'current_topic_index', 'objective', 'started_at', 'completed_at',
+            'elapsed_time_minutes', 'priority'
+        ]
+        
+        for field in meeting_fields:
+            if field in task_data:
+                return False, f"Task contains meeting field '{field}' - this should be a meeting, not a task"
+        
+        # Check for required task fields
+        required_fields = [
+            'title', 'description', 'requirements', 'acceptance_criteria',
+            'difficulty', 'xp_reward', 'status'
+        ]
+        
+        missing_fields = [f for f in required_fields if f not in task_data]
+        if missing_fields:
+            return False, f"Task missing required fields: {missing_fields}"
+        
+        # Check for meeting-like keywords in title/description
+        meeting_keywords = [
+            'meeting', 'check-in', 'standup', 'discussion', 'attend',
+            'participants', 'colleagues', '1-on-1', 'one-on-one',
+            'sync up', 'catch up', 'team call'
+        ]
+        
+        title_lower = task_data.get('title', '').lower()
+        desc_lower = task_data.get('description', '').lower()
+        
+        for keyword in meeting_keywords:
+            if keyword in title_lower or keyword in desc_lower:
+                return False, f"Task contains meeting keyword '{keyword}' - this might be a meeting"
+        
+        return True, ""
+    
+    def validate_meeting_data(self, meeting_data: Dict[str, Any]) -> tuple[bool, str]:
+        """
+        Validate that data is a proper meeting, not a task.
+        
+        Checks for:
+        - Task-specific fields that shouldn't be in meetings
+        - Required meeting fields
+        
+        Args:
+            meeting_data: Meeting data dictionary to validate
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+            - is_valid: True if data is a valid meeting, False otherwise
+            - error_message: Empty string if valid, error description if invalid
+        """
+        # Check for task-specific fields that shouldn't be in meetings
+        task_fields = [
+            'requirements', 'acceptance_criteria', 'xp_reward', 'difficulty',
+            'format_type', 'options', 'blanks', 'matching_left', 'matching_right',
+            'correct_matches', 'code_snippet', 'items_to_prioritize', 'task_type'
+        ]
+        
+        for field in task_fields:
+            if field in meeting_data:
+                return False, f"Meeting contains task field '{field}' - this should be a task, not a meeting"
+        
+        # Check for required meeting fields
+        required_fields = [
+            'meeting_type', 'title', 'status', 'participants',
+            'estimated_duration_minutes', 'context'
+        ]
+        
+        missing_fields = [f for f in required_fields if f not in meeting_data]
+        if missing_fields:
+            return False, f"Meeting missing required fields: {missing_fields}"
+        
+        return True, ""
+    
     # ==================== Task Methods ====================
     
     def create_task(self, task_id: str, session_id: str, task_data: Dict[str, Any]) -> None:
         """
-        Create a new task in Firestore.
+        Create a new task in Firestore with validation.
         
         Args:
             task_id: Unique identifier for the task
@@ -315,9 +411,21 @@ class FirestoreManager:
             task_data: Task data dictionary containing title, description, difficulty, etc.
         
         Raises:
+            ValueError: If task data validation fails
             Exception: If task creation fails
         """
         try:
+            # Validate task data before storing
+            is_valid, error_msg = self.validate_task_data(task_data)
+            
+            if not is_valid:
+                logger.error(f"Invalid task data for task {task_id} in session {session_id}")
+                logger.error(f"Validation error: {error_msg}")
+                logger.error(f"Task data: {task_data}")
+                raise ValueError(f"Invalid task data: {error_msg}")
+            
+            logger.info(f"Task data validation passed for task {task_id}")
+            
             task_data['task_id'] = task_id
             task_data['session_id'] = session_id
             task_data['created_at'] = datetime.utcnow()
@@ -326,7 +434,12 @@ class FirestoreManager:
             task_data['task_type'] = task_data.get('task_type', 'work')  # work, meeting
             
             self.db.collection(self.tasks_collection).document(task_id).set(task_data)
+            logger.info(f"Successfully created task {task_id} for session {session_id}")
+        except ValueError:
+            # Re-raise ValueError for validation failures
+            raise
         except Exception as e:
+            logger.error(f"Failed to create task {task_id}: {str(e)}")
             raise Exception(f"Failed to create task {task_id}: {str(e)}")
     
     def update_task(self, task_id: str, update_data: Dict[str, Any]) -> None:
@@ -662,7 +775,7 @@ class FirestoreManager:
     
     def create_meeting(self, meeting_id: str, session_id: str, meeting_data: Dict[str, Any]) -> None:
         """
-        Create a new meeting in Firestore.
+        Create a new meeting in Firestore with validation.
         
         Meeting document structure:
         {
@@ -693,9 +806,21 @@ class FirestoreManager:
             meeting_data: Meeting data dictionary
         
         Raises:
+            ValueError: If meeting data validation fails
             Exception: If meeting creation fails
         """
         try:
+            # Validate meeting data before storing
+            is_valid, error_msg = self.validate_meeting_data(meeting_data)
+            
+            if not is_valid:
+                logger.error(f"Invalid meeting data for meeting {meeting_id} in session {session_id}")
+                logger.error(f"Validation error: {error_msg}")
+                logger.error(f"Meeting data: {meeting_data}")
+                raise ValueError(f"Invalid meeting data: {error_msg}")
+            
+            logger.info(f"Meeting data validation passed for meeting {meeting_id}")
+            
             # Set required fields
             meeting_data['meeting_id'] = meeting_id
             meeting_data['session_id'] = session_id
@@ -706,6 +831,8 @@ class FirestoreManager:
             meeting_data.setdefault('status', 'scheduled')
             meeting_data.setdefault('current_topic_index', 0)
             meeting_data.setdefault('conversation_history', [])
+            meeting_data.setdefault('is_player_turn', False)
+            meeting_data.setdefault('last_message_timestamp', None)
             meeting_data.setdefault('elapsed_time_minutes', 0)
             meeting_data.setdefault('started_at', None)
             meeting_data.setdefault('completed_at', None)
@@ -714,8 +841,12 @@ class FirestoreManager:
             # Create document
             meeting_ref = self.db.collection('meetings').document(meeting_id)
             meeting_ref.set(meeting_data)
-            logger.info(f"Created meeting {meeting_id} for session {session_id}")
+            logger.info(f"Successfully created meeting {meeting_id} for session {session_id}")
+        except ValueError:
+            # Re-raise ValueError for validation failures
+            raise
         except Exception as e:
+            logger.error(f"Failed to create meeting {meeting_id}: {str(e)}")
             raise Exception(f"Failed to create meeting {meeting_id}: {str(e)}")
     
     def get_meeting(self, meeting_id: str) -> Dict[str, Any]:
@@ -848,7 +979,8 @@ class FirestoreManager:
             "participant_role": Optional[str],
             "content": str,
             "sentiment": Optional[str] (positive, neutral, constructive, challenging),
-            "timestamp": str
+            "timestamp": str,
+            "sequence_number": int
         }
         
         Args:
@@ -867,10 +999,15 @@ class FirestoreManager:
             if 'timestamp' not in message:
                 message['timestamp'] = datetime.utcnow().isoformat()
             
+            # Add sequence number if not present
+            if 'sequence_number' not in message:
+                message['sequence_number'] = len(conversation_history)
+            
             conversation_history.append(message)
             
             self.update_meeting(meeting_id, {
-                'conversation_history': conversation_history
+                'conversation_history': conversation_history,
+                'last_message_timestamp': message['timestamp']
             })
         except Exception as e:
             raise Exception(f"Failed to append message to meeting {meeting_id}: {str(e)}")

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Profession } from '../types';
 import { 
-  Briefcase, BarChart2, PenTool, TrendingUp, Zap, Cpu, 
+  Briefcase, BarChart2, PenTool, TrendingUp, Zap, 
   Code, Server, Settings, Megaphone, ClipboardList, 
   Brain, Shield, FileText 
 } from 'lucide-react';
@@ -12,7 +12,6 @@ interface ProfessionSelectorProps {
   professions: Profession[];
   onSelectProfession: (profession: Profession, seed?: string) => void;
   isLoading: boolean;
-  onNavigateToAgents: () => void;
 }
 
 const iconMap: { [key: string]: React.ReactNode } = {
@@ -54,7 +53,7 @@ const ProfessionCard: React.FC<{ profession: Profession, onSelect: () => void }>
   </div>
 );
 
-const ProfessionSelector: React.FC<ProfessionSelectorProps> = ({ professions, onSelectProfession, isLoading, onNavigateToAgents }) => {
+const ProfessionSelector: React.FC<ProfessionSelectorProps> = ({ professions, onSelectProfession, isLoading }) => {
   const [customProfession, setCustomProfession] = useState('');
   const [seed, setSeed] = useState('');
 
@@ -73,13 +72,7 @@ const ProfessionSelector: React.FC<ProfessionSelectorProps> = ({ professions, on
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8 relative">
-       <div className="absolute top-4 right-4 z-10">
-          <Button onClick={onNavigateToAgents}>
-            <Cpu className="w-4 h-4 mr-2 inline-block" />
-            View AI Agents
-          </Button>
-      </div>
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4 sm:p-6 lg:p-8">
       {isLoading ? (
         <div className="flex flex-col items-center">
           <LoadingSpinner />

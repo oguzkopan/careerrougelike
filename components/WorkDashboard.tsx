@@ -4,14 +4,16 @@ import TaskPanel from './TaskPanel';
 import TaskDetailModal from './TaskDetailModal';
 import MeetingsSection from './MeetingsSection';
 import MeetingSummaryModal from './MeetingSummaryModal';
+import MeetingView from './MeetingView';
 import Button from './shared/Button';
 import ResetButton from './shared/ResetButton';
 import AgentFallback from './AgentFallback';
 import { Briefcase, Calendar, DollarSign, Search, FileText } from 'lucide-react';
-import { WorkTask, Meeting, MeetingSummary } from '../types';
-import { useTasks, usePlayerState, useMeetings, joinMeeting, SessionExpiredError } from '../services/backendApiService';
+import { WorkTask, Meeting, MeetingSummary, isWorkTask, isMeeting } from '../types';
+import { useTasks, usePlayerState, useMeetings, joinMeeting, respondToTopic, SessionExpiredError } from '../services/backendApiService';
 import { useToast } from './shared/Toast';
 import LoadingSpinner from './shared/LoadingSpinner';
+import './meetings.css';
 
 interface WorkDashboardProps {
   sessionId: string;
@@ -27,6 +29,8 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
   onReset,
 }) => {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedTaskData, setSelectedTaskData] = useState<WorkTask | null>(null);
+  const [submittedTaskId, setSubmittedTaskId] = useState<string | null>(null);
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<MeetingSummary | null>(null);
   const { showToast } = useToast();
@@ -39,7 +43,7 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     refetch: refetchState
   } = usePlayerState(sessionId);
   const {
-    tasks,
+    tasks: allTasks,
     isLoading: isLoadingTasks,
     submitTaskAsync,
     isSubmitting,
@@ -47,6 +51,10 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     error: tasksError,
     refetch: refetchTasks,
   } = useTasks(sessionId);
+  
+  // Filter out matching tasks (deprecated format)
+  // Using type assertion because matching was removed from TaskFormatType but may still exist in database
+  const tasks = allTasks.filter(task => (task.formatType as string) !== 'matching');
   const {
     meetings,
     isLoading: isLoadingMeetings,
@@ -78,41 +86,63 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     }
   }, [playerState, isLoadingState, isLoadingTasks, refetchState, refetchTasks]);
 
-  const selectedTask = tasks.find((task) => task.id === selectedTaskId);
+  const selectedTask = selectedTaskData || tasks.find((task) => task.id === selectedTaskId);
 
   const handleSelectTask = (taskId: string) => {
-    setSelectedTaskId(taskId);
+    const task = tasks.find((t) => t.id === taskId);
+    if (task) {
+      setSelectedTaskId(taskId);
+      setSelectedTaskData(task); // Store the task data
+    }
   };
 
   const handleCloseModal = () => {
     setSelectedTaskId(null);
+    setSelectedTaskData(null); // Clear the stored task data
   };
 
   const handleSubmitTask = async (solution: string) => {
     if (!selectedTaskId) return;
 
     try {
+      // Track which task this result belongs to
+      setSubmittedTaskId(selectedTaskId);
+      
       const result = await submitTaskAsync({ taskId: selectedTaskId, solution });
       
-      // Show toast notification
-      if (result.leveledUp) {
-        showToast(
-          `🎉 Level Up! You reached Level ${result.newLevel}! +${result.xpGained} XP`,
-          'success'
-        );
-      } else {
-        showToast(`✅ Task completed! +${result.xpGained} XP earned`, 'success');
-      }
+      // Result will be passed to the modal via submitResult prop
+      // The modal will display the score, XP, and feedback
+      console.log('Task submitted successfully:', result);
+      
+      // Refresh tasks and player state to show updated data
+      refetchTasks();
+      refetchState();
     } catch (error) {
       showToast('Failed to submit task. Please try again.', 'error');
       console.error('Task submission error:', error);
     }
   };
 
+  const [activeMeetingState, setActiveMeetingState] = useState<any>(null);
+
   const handleJoinMeeting = async (meetingId: string) => {
     try {
-      await joinMeeting(sessionId, meetingId);
+      const meetingState = await joinMeeting(sessionId, meetingId);
       setActiveMeetingId(meetingId);
+      
+      // Store the full meeting state including conversation history
+      if (meetingState && meetingState.meeting_data) {
+        // Merge the meeting state data with conversation history
+        const fullMeetingData = {
+          ...meetingState.meeting_data,
+          conversation_history: meetingState.conversation_history,
+          is_player_turn: meetingState.is_player_turn,
+          current_topic_index: meetingState.current_topic_index
+        };
+        setActiveMeetingState(fullMeetingData);
+        console.log('[WorkDashboard] Meeting joined with initial conversation:', meetingState.conversation_history?.length || 0, 'messages');
+      }
+      
       refetchMeetings();
     } catch (error) {
       showToast('Failed to join meeting. Please try again.', 'error');
@@ -120,11 +150,61 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     }
   };
 
-  const handleEndMeeting = () => {
-    setActiveMeetingId(null);
-    refetchMeetings();
-    refetchTasks(); // Refresh tasks in case meeting generated new tasks
-    refetchState(); // Refresh state for XP updates
+  const handleRespondToTopic = async (topicId: string, response: string) => {
+    if (!activeMeetingId) return { ai_responses: [], evaluation: {}, next_topic_index: 0, meeting_complete: false };
+    
+    try {
+      const result = await respondToTopic(sessionId, activeMeetingId, topicId, response);
+      return result;
+    } catch (error) {
+      showToast('Failed to submit response. Please try again.', 'error');
+      console.error('Meeting response error:', error);
+      throw error;
+    }
+  };
+
+  const handleEndMeeting = async () => {
+    if (!activeMeetingId) return;
+    
+    try {
+      // Complete the meeting and get summary
+      const { completeMeeting } = await import('../services/backendApiService');
+      const summary = await completeMeeting(sessionId, activeMeetingId);
+      
+      // Show the meeting summary modal
+      setMeetingSummary({
+        meetingId: activeMeetingId,
+        xpGained: summary.xp_gained || 0,
+        overallScore: summary.participation_score || 0,
+        feedback: {
+          strengths: summary.feedback?.strengths || [],
+          improvements: summary.feedback?.improvements || [],
+        },
+        generatedTasks: summary.generated_tasks || [],
+        keyDecisions: summary.key_decisions || [],
+        actionItems: summary.action_items || [],
+        earlyDeparture: false,
+      });
+      
+      // Clear active meeting
+      setActiveMeetingId(null);
+      setActiveMeetingState(null);
+      
+      // Refresh data
+      refetchMeetings();
+      refetchTasks();
+      refetchState();
+    } catch (error) {
+      console.error('Failed to complete meeting:', error);
+      showToast('Failed to load meeting summary. Please try again.', 'error');
+      
+      // Still close the meeting even if summary fails
+      setActiveMeetingId(null);
+      setActiveMeetingState(null);
+      refetchMeetings();
+      refetchTasks();
+      refetchState();
+    }
   };
 
   const handleLeaveMeeting = (summary: any) => {
@@ -145,6 +225,7 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
 
     setMeetingSummary(partialSummary);
     setActiveMeetingId(null);
+    setActiveMeetingState(null); // Clear the stored meeting state
     refetchMeetings();
     refetchTasks();
     refetchState();
@@ -259,6 +340,10 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
     interviewsPassed: playerState.stats.interviewsPassed,
   };
 
+  // Apply type guards to filter tasks and meetings data
+  const workTasks = tasks.filter(isWorkTask);
+  const meetingsList = (meetings || []).filter(isMeeting);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
       {/* Header with Current Job Info */}
@@ -319,56 +404,81 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
 
       {/* Main Content Area */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* If in active meeting, show placeholder (MeetingView will be integrated in task 16) */}
+        {/* If in active meeting, show MeetingView */}
         {activeMeetingId ? (
-          <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-8 text-center">
-            <Calendar className="w-16 h-16 text-purple-400 mx-auto mb-4" />
-            <h2 className="text-2xl font-bold text-white mb-2">Meeting View</h2>
-            <p className="text-gray-400 mb-6">
-              Meeting ID: {activeMeetingId}
-            </p>
-            <p className="text-gray-500 mb-6">
-              Full meeting view will be integrated in the next task.
-            </p>
-            <Button onClick={handleEndMeeting}>
-              Return to Dashboard
-            </Button>
-          </div>
+          (() => {
+            // Use the stored meeting state if available (includes conversation history)
+            // Otherwise fall back to the meeting from the list
+            const activeMeeting = activeMeetingState || meetingsList.find(m => m.id === activeMeetingId);
+            if (!activeMeeting) {
+              return (
+                <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-8 text-center">
+                  <Calendar className="w-16 h-16 text-purple-400 mx-auto mb-4" />
+                  <h2 className="text-2xl font-bold text-white mb-2">Meeting Not Found</h2>
+                  <p className="text-gray-400 mb-6">
+                    The meeting you're trying to join could not be found.
+                  </p>
+                  <Button onClick={handleEndMeeting}>
+                    Return to Dashboard
+                  </Button>
+                </div>
+              );
+            }
+            
+            // Ensure duration_minutes is set (use estimated_duration_minutes as fallback)
+            const meetingDataWithDuration = {
+              ...activeMeeting,
+              duration_minutes: activeMeeting.duration_minutes || activeMeeting.estimated_duration_minutes
+            };
+            
+            return (
+              <MeetingView
+                meetingData={meetingDataWithDuration as any}
+                sessionId={sessionId}
+                onRespond={handleRespondToTopic}
+                onEndMeeting={handleEndMeeting}
+                onLeaveMeeting={handleLeaveMeeting}
+              />
+            );
+          })()
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
             {/* Left Sidebar - Stats Panel */}
-            <aside className="lg:col-span-3">
-              <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden sticky top-6">
+            <aside className="lg:col-span-3 order-1">
+              <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto stats-scroll">
                 <StatsPanel playerStats={playerStats} />
               </div>
             </aside>
 
-            {/* Main Content - Two Column Layout for Meetings and Tasks */}
-            <main className="lg:col-span-9">
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                {/* Meetings Section */}
-                <div className="bg-gradient-to-br from-purple-900/20 to-blue-900/20 rounded-lg border border-purple-700/50 p-6">
-                  <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                    <Calendar className="w-6 h-6 text-purple-400" />
-                    Meetings
+            {/* Main Content - Tasks Section */}
+            <main className="lg:col-span-6 order-3 lg:order-2">
+              <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-4 md:p-6">
+                <h2 className="text-lg md:text-xl font-bold text-white mb-4 md:mb-6 flex items-center gap-2">
+                  <Briefcase className="w-5 h-5 md:w-6 md:h-6 text-indigo-400 flex-shrink-0" />
+                  <span className="truncate">Active Tasks</span>
+                </h2>
+                <TaskPanel tasks={workTasks} onSelectTask={handleSelectTask} />
+              </div>
+            </main>
+
+            {/* Right Sidebar - Meetings Section */}
+            <aside className="lg:col-span-3 order-2 lg:order-3">
+              <div className="bg-gradient-to-br from-purple-900/20 to-blue-900/20 rounded-lg border border-purple-700/50 overflow-hidden lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] flex flex-col max-h-[500px] lg:max-h-[calc(100vh-3rem)]">
+                <div className="p-3 md:p-4 lg:p-6 border-b border-purple-700/30 flex-shrink-0">
+                  <h2 className="text-base md:text-lg lg:text-xl font-bold text-white flex items-center gap-2">
+                    <Calendar className="w-4 h-4 md:w-5 md:h-5 lg:w-6 lg:h-6 text-purple-400 flex-shrink-0" />
+                    <span className="truncate">Meetings</span>
                   </h2>
+                </div>
+                <div className="overflow-y-auto flex-1 p-3 md:p-4 lg:p-6 meetings-scroll">
                   <MeetingsSection
-                    meetings={meetings || []}
+                    meetings={meetingsList}
                     onJoinMeeting={handleJoinMeeting}
                     isLoading={isLoadingMeetings}
                   />
                 </div>
-
-                {/* Tasks Section */}
-                <div className="bg-gray-800/50 rounded-lg border border-gray-700 p-6">
-                  <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                    <Briefcase className="w-6 h-6 text-indigo-400" />
-                    Active Tasks
-                  </h2>
-                  <TaskPanel tasks={tasks} onSelectTask={handleSelectTask} />
-                </div>
               </div>
-            </main>
+            </aside>
           </div>
         )}
       </div>
@@ -380,7 +490,7 @@ const WorkDashboard: React.FC<WorkDashboardProps> = ({
           onClose={handleCloseModal}
           onSubmit={handleSubmitTask}
           isSubmitting={isSubmitting}
-          submitResult={submitResult}
+          submitResult={selectedTaskId === submittedTaskId ? submitResult : null}
         />
       )}
 

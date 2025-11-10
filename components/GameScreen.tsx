@@ -5,39 +5,27 @@ import StorylinePanel from './StorylinePanel';
 import TaskPanel from './TaskPanel';
 import StatsPanel from './StatsPanel';
 import LoadingSpinner from './shared/LoadingSpinner';
-import { Cpu } from 'lucide-react';
 import Button from './shared/Button';
 
 interface GameScreenProps {
   gameState: GameState;
   onSubmitAnswer: (answer: string) => void;
   onSubmitEventChoice: (choice: string) => void;
-  onNavigateToAgents: () => void;
 }
 
-const GameScreen: React.FC<GameScreenProps> = ({ gameState, onSubmitAnswer, onSubmitEventChoice, onNavigateToAgents }) => {
+const GameScreen: React.FC<GameScreenProps> = ({ gameState, onSubmitAnswer, onSubmitEventChoice }) => {
   const { storyEvents, currentTask, playerProfile, isLoading, error } = gameState;
 
   return (
     <div className="h-full bg-gray-900 text-white font-sans flex flex-col">
       <header className="bg-gray-900/80 backdrop-blur-sm border-b border-gray-700 p-4 flex justify-between items-center">
         <h1 className="text-2xl font-bold">Career<span className="text-indigo-400">Roguelike</span></h1>
-        <div className="flex items-center gap-4">
-          {playerProfile && (
-             <div className="text-right">
-                <div className="font-semibold text-white">{playerProfile.name}</div>
-                <div className="text-sm text-indigo-400">{playerProfile.profession.name} - L{playerProfile.level}</div>
-             </div>
-          )}
-          <button
-            onClick={onNavigateToAgents}
-            className="flex items-center px-4 py-2 bg-gray-700/50 text-white font-semibold rounded-md hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-indigo-500 transition-colors duration-200"
-            aria-label="View AI Agents"
-          >
-            <Cpu className="w-5 h-5 mr-2" />
-            AI Agents
-          </button>
-        </div>
+        {playerProfile && (
+          <div className="text-right">
+            <div className="font-semibold text-white">{playerProfile.name}</div>
+            <div className="text-sm text-indigo-400">{playerProfile.profession.name} - L{playerProfile.level}</div>
+          </div>
+        )}
       </header>
       
       {error && <div className="bg-red-500/20 text-red-300 p-4 text-center">{error}</div>}

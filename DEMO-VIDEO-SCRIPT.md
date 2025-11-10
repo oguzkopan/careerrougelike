@@ -27,13 +27,13 @@
 **Visual**: Architecture diagram showing frontend, backend, agents, and Firestore
 
 **Narration**:
-> "The system consists of a React frontend and Python FastAPI backend, both deployed on Cloud Run. Five specialized AI agents—Job Agent, Interview Agent, Task Agent, Grader Agent, and CV Agent—work together through a Workflow Orchestrator.
+> "The system consists of a React frontend and Python FastAPI backend, both deployed on Cloud Run. Seven specialized AI agents—Job Agent, Interview Agent, Task Agent, Grader Agent, CV Agent, Meeting Generator, and Meeting Evaluator—work together through a Workflow Orchestrator.
 >
-> All agents use Gemini 2.5 Flash for reasoning and communicate through a shared state dictionary, making the entire data flow transparent and debuggable."
+> What makes this unique is the bidirectional relationship between tasks and meetings: completing tasks triggers meetings, and meetings generate follow-up tasks, creating a dynamic workplace simulation. All agents use Gemini 2.5 Flash for reasoning."
 
 **Highlight**:
 - Point to each agent
-- Show data flow arrows
+- Show bidirectional arrows between Task and Meeting agents
 - Emphasize Firestore persistence
 
 ---
@@ -129,19 +129,20 @@
 
 ## Work Dashboard (2:25 - 2:50)
 
-**Visual**: Show work dashboard with job info, stats panel, and task panel
+**Visual**: Show work dashboard with job info, stats panel, task panel, and meetings section
 
 **Narration**:
 > "Welcome to the work dashboard! The CV Agent has automatically updated our resume with the new job. We can see our current position, salary, and start date.
 >
-> The Task Agent has generated three initial work tasks specific to our iOS Engineer role. Each task has a difficulty rating and XP reward.
+> The Task Agent has generated three initial work tasks specific to our iOS Engineer role. Notice we also have a scheduled meeting—the Meeting Generator created an onboarding one-on-one with our manager.
 >
-> Let's complete a task to gain experience."
+> This is the bidirectional system in action: tasks and meetings work together to create a realistic workplace experience. Let's complete a task to gain experience."
 
 **Highlight**:
 - Point to current job card
 - Show stats panel with level and XP bar
 - Hover over task cards
+- Point to meeting card with calendar icon
 
 **Action**:
 - Click on a task to open detail modal
@@ -165,16 +166,48 @@
 **Narration**:
 > "The Grader Agent evaluates our solution and awards 50 XP! Notice how our XP bar fills up and we're getting closer to the next level.
 >
-> The CV Agent automatically adds this accomplishment to our resume, and the Task Agent generates a new task to keep us working."
+> The CV Agent automatically adds this accomplishment to our resume. And here's the bidirectional system at work: after completing several tasks, the system automatically schedules a project review meeting to discuss our progress. The Task Agent also generates a new task to keep us working."
 
 **Highlight**:
 - Show XP count-up animation
 - Point to updated XP bar
 - Show new task appearing
+- Point to new meeting notification (if triggered)
 
 ---
 
-## Job Switching (3:15 - 3:35)
+## Meeting Participation (3:15 - 3:40)
+
+**Visual**: Click on a meeting card to join
+
+**Narration**:
+> "Let's join this project review meeting. The Meeting Generator created this scenario with AI colleagues who have distinct personalities—supportive, analytical, and direct.
+>
+> The meeting has discussion topics based on our recent work. AI participants discuss the topic first, then it's our turn to contribute."
+
+**Action**:
+- Click "Join Meeting"
+- Show meeting view with participants
+- Show AI conversation appearing
+- Type response to discussion topic
+- Click "Submit Response"
+
+**Visual**: Show AI colleagues reacting to player's response
+
+**Narration**:
+> "Notice how the AI colleagues respond naturally to our contribution, building on what we said. After discussing all topics, the Meeting Evaluator scores our participation and generates follow-up tasks based on the meeting discussions.
+>
+> This bidirectional flow—tasks trigger meetings, meetings generate tasks—creates a continuous, realistic workplace experience."
+
+**Highlight**:
+- Point to AI participant avatars
+- Show conversation flow
+- Show meeting completion with score
+- Point to generated tasks from meeting
+
+---
+
+## Job Switching (3:40 - 4:00)
 
 **Visual**: Click "Job Search" button, show new job listings
 
@@ -191,32 +224,33 @@
 **Visual**: Fast-forward through interview and acceptance
 
 **Narration**:
-> "After passing the interview, we can accept the new offer. The system automatically updates our CV with an end date for the previous job and generates new, more challenging tasks for our senior role."
+> "After passing the interview, we can accept the new offer. The system automatically updates our CV with an end date for the previous job and generates new, more challenging tasks and senior-level meetings for our role—stakeholder presentations and performance reviews."
 
 ---
 
-## Technical Highlights (3:35 - 3:55)
+## Technical Highlights (4:00 - 4:20)
 
 **Visual**: Split screen showing code and Cloud Run console
 
 **Narration**:
-> "Behind the scenes, all five agents are powered by Gemini 2.5 Flash and orchestrated through Google ADK. The entire system is deployed on Cloud Run with auto-scaling from zero to ten instances.
+> "Behind the scenes, all seven agents are powered by Gemini 2.5 Flash and orchestrated through a centralized Workflow Orchestrator. The bidirectional system monitors dashboard state and intelligently triggers content generation—completing 2-4 tasks triggers a meeting, failing a task twice triggers a feedback session, and meetings generate 0-3 follow-up tasks.
 >
-> Firestore provides persistent state management, ensuring players can resume their careers anytime."
+> The entire system is deployed on Cloud Run with auto-scaling from zero to ten instances. Firestore provides persistent state management, ensuring players can resume their careers anytime."
 
 **Highlight**:
 - Show agent code snippets
+- Show bidirectional trigger logic
 - Show Cloud Run metrics
-- Show Firestore collections
+- Show Firestore collections with tasks and meetings
 
 ---
 
-## Closing (3:55 - 4:10)
+## Closing (4:20 - 4:35)
 
-**Visual**: Return to architecture diagram, then show URLs
+**Visual**: Return to architecture diagram with bidirectional arrows highlighted, then show URLs
 
 **Narration**:
-> "CareerRoguelike demonstrates excellent multi-agent collaboration with a complete, production-ready application. Five specialized AI agents work together seamlessly to create a dynamic, engaging career simulation.
+> "CareerRoguelike demonstrates advanced multi-agent collaboration with a complete, production-ready application. Seven specialized AI agents work together in a bidirectional system where tasks trigger meetings and meetings generate tasks, creating a dynamic, realistic workplace simulation.
 >
 > Try it yourself at the link below, and check out the code on GitHub. Thank you!"
 
@@ -226,6 +260,43 @@
 - **Documentation**: See README.md
 
 **Visual**: Fade to black with "Built for Google Cloud Run Hackathon"
+
+---
+
+## Key Talking Points: Bidirectional System
+
+**Why It's Important for Hackathon:**
+This demonstrates advanced multi-agent collaboration where agents don't just work independently—they trigger each other's execution based on context and state.
+
+**Highlight These Features:**
+
+1. **Task → Meeting Triggers**
+   - "After completing 2-4 tasks, the system automatically schedules a project review meeting"
+   - "If you fail a task twice, a feedback session is triggered to help you improve"
+   - "The system monitors your dashboard and generates meetings when needed"
+
+2. **Meeting → Task Triggers**
+   - "Meetings generate 0-3 follow-up tasks based on the discussions"
+   - "Action items from meetings become actual work assignments"
+   - "The system ensures you always have 3-5 tasks to work on"
+
+3. **Intelligent Monitoring**
+   - "The Workflow Orchestrator continuously monitors dashboard state"
+   - "Target: 3-5 tasks and 1-2 meetings at all times"
+   - "Content generation adapts to your performance and level"
+
+4. **Context Propagation**
+   - "Tasks reference the meetings they came from"
+   - "Meetings discuss the tasks you recently completed"
+   - "Creates a continuous narrative through your career"
+
+**Demo Flow to Show Bidirectional System:**
+1. Complete 2-3 tasks quickly
+2. Show meeting notification appearing
+3. Join meeting and participate
+4. Show meeting completion generating new tasks
+5. Point out how tasks reference the meeting
+6. Complete another task to show continuous loop
 
 ---
 
@@ -265,24 +336,28 @@
 
 If time is limited, focus on:
 
-1. **Opening** (0:00-0:15): Quick intro and architecture
+1. **Opening** (0:00-0:15): Quick intro and architecture with bidirectional system
 2. **Job Generation** (0:15-0:30): Show AI-generated listings
 3. **Interview** (0:30-0:50): Quick interview flow
-4. **Work Dashboard** (0:50-1:10): Show tasks and XP system
-5. **Task Completion** (1:10-1:30): Complete one task
-6. **Technical Highlights** (1:30-1:50): Show Cloud Run and agents
-7. **Closing** (1:50-2:00): Call to action
+4. **Work Dashboard** (0:50-1:10): Show tasks, meetings, and XP system
+5. **Task Completion** (1:10-1:25): Complete one task, show meeting trigger
+6. **Meeting Demo** (1:25-1:40): Quick meeting participation
+7. **Technical Highlights** (1:40-1:55): Show Cloud Run, agents, and bidirectional logic
+8. **Closing** (1:55-2:00): Call to action
 
 ---
 
 ## B-Roll Footage Ideas
 
 - Code editor showing agent definitions
+- Bidirectional trigger logic in workflow_orchestrator.py
 - Cloud Run console showing auto-scaling
-- Firestore console showing data structure
+- Firestore console showing data structure (tasks and meetings collections)
 - Terminal showing deployment commands
-- Architecture diagrams with animations
-- API requests in browser DevTools
+- Architecture diagrams with bidirectional arrows animated
+- API requests in browser DevTools showing task/meeting generation
+- Dashboard state monitoring code
+- Meeting trigger conditions visualization
 
 ---
 
@@ -294,7 +369,7 @@ For those who prefer to read the script without visuals:
 Welcome to CareerRoguelike—an AI-powered job market simulator built with Google ADK and Cloud Run.
 
 [Show architecture]
-Five specialized AI agents work together: Job Agent generates listings, Interview Agent creates questions, Task Agent produces assignments, Grader Agent evaluates submissions, and CV Agent updates resumes.
+Seven specialized AI agents work together in a bidirectional system: Job Agent generates listings, Interview Agent creates questions, Task Agent produces assignments, Grader Agent evaluates submissions, CV Agent updates resumes, Meeting Generator creates workplace scenarios, and Meeting Evaluator scores participation.
 
 [Show graduation]
 Players start as fresh graduates and begin their job search.
@@ -306,16 +381,22 @@ The Job Agent generates realistic job listings in real-time using Gemini 2.5 Fla
 The Interview Agent creates job-specific questions, and the Grader Agent provides detailed feedback.
 
 [Show work dashboard]
-After accepting a job, players complete tasks to gain XP and level up.
+After accepting a job, players complete tasks and attend meetings to gain XP and level up.
 
 [Show task completion]
-The Grader evaluates solutions, awards XP, and the CV Agent updates the resume automatically.
+The Grader evaluates solutions, awards XP, and the CV Agent updates the resume automatically. Completing tasks triggers meetings.
+
+[Show meeting]
+Players participate in virtual meetings with AI colleagues. Meetings generate follow-up tasks based on discussions.
+
+[Show bidirectional system]
+This bidirectional flow—tasks trigger meetings, meetings generate tasks—creates a continuous, realistic workplace experience.
 
 [Show job switching]
 As players level up, they can search for better opportunities and advance their careers.
 
 [Show technical details]
-Everything runs on Cloud Run with auto-scaling and Firestore persistence.
+Everything runs on Cloud Run with auto-scaling and Firestore persistence. The system intelligently monitors dashboard state and generates content to maintain 3-5 tasks and 1-2 meetings.
 
 [Closing]
 Try it yourself at the link below. Thank you!
@@ -332,14 +413,34 @@ For documentation and submission:
 3. **Job Details**: Full job description view
 4. **Interview Questions**: Question display with text areas
 5. **Interview Results**: Pass screen with feedback
-6. **Work Dashboard**: Job info, stats, and tasks
+6. **Work Dashboard**: Job info, stats, tasks, and meetings
 7. **Task Detail**: Task modal with solution area
 8. **Task Success**: XP animation and level up
-9. **CV View**: Resume with experience and skills
-10. **Architecture Diagram**: System overview
-11. **Cloud Run Console**: Deployed services
-12. **Firestore Console**: Data collections
+9. **Meeting View**: Virtual meeting with AI participants
+10. **Meeting Conversation**: AI colleagues discussing and responding
+11. **Meeting Summary**: Participation score and generated tasks
+12. **CV View**: Resume with experience and skills
+13. **Architecture Diagram**: System overview with bidirectional arrows
+14. **Bidirectional Flow**: Diagram showing task-meeting triggers
+15. **Cloud Run Console**: Deployed services
+16. **Firestore Console**: Data collections (tasks and meetings)
 
 ---
 
-**Last Updated**: November 6, 2025
+## Summary of Updates
+
+**New in This Version:**
+- ✅ Added Meeting Participation section (3:15-3:40)
+- ✅ Updated agent count from 5 to 7 (added Meeting Generator and Evaluator)
+- ✅ Emphasized bidirectional task-meeting system throughout
+- ✅ Added key talking points for bidirectional system
+- ✅ Updated screenshots to include meeting views
+- ✅ Enhanced technical highlights to show trigger logic
+- ✅ Added meeting-related B-roll footage ideas
+
+**Key Message:**
+The bidirectional system is the standout feature that demonstrates advanced multi-agent collaboration—agents don't just work independently, they trigger each other based on context and state.
+
+---
+
+**Last Updated**: November 10, 2025

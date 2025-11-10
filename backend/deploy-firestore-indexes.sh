@@ -21,16 +21,25 @@ echo -e "${BLUE}║         Firestore Index Deployment Script                 �
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check if gcloud is installed
-if ! command -v gcloud &> /dev/null; then
-    echo -e "${RED}❌ Error: gcloud CLI is not installed${NC}"
-    echo "Please install it from: https://cloud.google.com/sdk/docs/install"
-    exit 1
+# Check if firebase CLI is installed
+if ! command -v firebase &> /dev/null; then
+    echo -e "${YELLOW}⚠️  Firebase CLI not found${NC}"
+    echo -e "${YELLOW}Installing Firebase CLI via npm...${NC}"
+    echo ""
+    npm install -g firebase-tools
+    echo ""
 fi
 
 # Check if index file exists
 if [ ! -f "$INDEX_FILE" ]; then
     echo -e "${RED}❌ Error: $INDEX_FILE not found${NC}"
+    echo "Please ensure you're running this script from the backend directory"
+    exit 1
+fi
+
+# Check if firebase.json exists
+if [ ! -f "firebase.json" ]; then
+    echo -e "${RED}❌ Error: firebase.json not found${NC}"
     echo "Please ensure you're running this script from the backend directory"
     exit 1
 fi
@@ -52,8 +61,8 @@ echo ""
 echo -e "${BLUE}🚀 Deploying Firestore indexes...${NC}"
 echo ""
 
-# Deploy indexes
-if gcloud firestore indexes create --project="$PROJECT_ID" --file="$INDEX_FILE" 2>&1; then
+# Deploy indexes using Firebase CLI
+if firebase deploy --only firestore:indexes --project="$PROJECT_ID" 2>&1; then
     echo ""
     echo -e "${GREEN}✅ Indexes deployment initiated successfully!${NC}"
     echo ""

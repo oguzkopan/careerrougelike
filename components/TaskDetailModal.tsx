@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { WorkTask } from '../types';
 import Button from './shared/Button';
 import { X, CheckCircle, Star, Award, Mic, ZoomIn, Loader } from 'lucide-react';
-import { celebrateTaskComplete } from './shared/confetti';
+import { celebrateTaskComplete, showTaskFailure } from './shared/confetti';
 import VoiceRecorder from './shared/VoiceRecorder';
 
 interface TaskDetailModalProps {
@@ -59,16 +59,57 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Validate matching tasks before submission
+    if (task.formatType === 'matching' && task.matchingLeft && task.matchingRight) {
+      try {
+        const matches = solution ? JSON.parse(solution || '{}') : {};
+        const matchedCount = Object.values(matches).filter(v => v).length;
+        
+        // Check if all items are matched
+        if (matchedCount < task.matchingLeft.length) {
+          const unmatched = task.matchingLeft.length - matchedCount;
+          if (!confirm(`You have ${unmatched} unmatched item(s). Do you want to submit anyway?`)) {
+            return;
+          }
+        }
+        
+        // Check for duplicate matches (same right item used multiple times)
+        const usedRightIds = Object.values(matches).filter(v => v);
+        const uniqueRightIds = new Set(usedRightIds);
+        if (usedRightIds.length !== uniqueRightIds.size) {
+          if (!confirm('Warning: You have used some options multiple times. Do you want to submit anyway?')) {
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Error validating matching task:', error);
+      }
+    }
+    
     if (solution.trim()) {
       onSubmit(solution);
-      setShowResult(true);
+      // Don't set showResult here - let useEffect handle it when submitResult arrives
     }
   };
 
-  // Trigger confetti when result is shown
+  // Auto-show result when submitResult becomes available
+  useEffect(() => {
+    if (submitResult && !showResult) {
+      setShowResult(true);
+    }
+  }, [submitResult]);
+
+  // Trigger animation based on pass/fail
   useEffect(() => {
     if (showResult && submitResult) {
-      celebrateTaskComplete();
+      // Check if task passed (score >= 70)
+      const isPassed = submitResult.score >= 70;
+      if (isPassed) {
+        celebrateTaskComplete();
+      } else {
+        showTaskFailure();
+      }
     }
   }, [showResult, submitResult]);
 
@@ -272,8 +313,26 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                     </div>
                   )}
 
+                  {/* Fallback for incomplete multiple choice tasks */}
+                  {task.formatType === 'multiple_choice' && (!task.options || task.options.length < 4) && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                      <p className="text-yellow-400 text-sm mb-3">
+                        ⚠️ This multiple choice task is incomplete. Please provide a text answer instead.
+                      </p>
+                      <textarea
+                        id="solution"
+                        rows={10}
+                        className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                        placeholder="Enter your solution here..."
+                        value={solution}
+                        onChange={(e) => setSolution(e.target.value)}
+                        disabled={isSubmitting || task.status === 'completed'}
+                      />
+                    </div>
+                  )}
+
                   {/* Multiple Choice Options */}
-                  {task.formatType === 'multiple_choice' && task.options && (
+                  {task.formatType === 'multiple_choice' && task.options && task.options.length >= 4 && (
                     <div className="space-y-3">
                       {task.options.map((option) => (
                         <label
@@ -302,8 +361,26 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                     </div>
                   )}
 
+                  {/* Fallback for incomplete prioritization tasks */}
+                  {task.formatType === 'prioritization' && (!task.prioritizationItems || task.prioritizationItems.length < 5) && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                      <p className="text-yellow-400 text-sm mb-3">
+                        ⚠️ This prioritization task is incomplete. Please provide a text answer instead.
+                      </p>
+                      <textarea
+                        id="solution"
+                        rows={10}
+                        className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                        placeholder="Enter your solution here..."
+                        value={solution}
+                        onChange={(e) => setSolution(e.target.value)}
+                        disabled={isSubmitting || task.status === 'completed'}
+                      />
+                    </div>
+                  )}
+
                   {/* Prioritization Task */}
-                  {task.formatType === 'prioritization' && task.prioritizationItems && (
+                  {task.formatType === 'prioritization' && task.prioritizationItems && task.prioritizationItems.length >= 5 && (
                     <div className="space-y-4">
                       <p className="text-sm text-gray-400">
                         Drag and drop to arrange items in priority order (highest priority at the top)
@@ -381,6 +458,24 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                     </div>
                   )}
 
+                  {/* Fallback for incomplete code review tasks */}
+                  {task.formatType === 'code_review' && !task.code && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                      <p className="text-yellow-400 text-sm mb-3">
+                        ⚠️ This code review task is incomplete. Please provide a text answer instead.
+                      </p>
+                      <textarea
+                        id="solution"
+                        rows={10}
+                        className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                        placeholder="Enter your solution here..."
+                        value={solution}
+                        onChange={(e) => setSolution(e.target.value)}
+                        disabled={isSubmitting || task.status === 'completed'}
+                      />
+                    </div>
+                  )}
+
                   {/* Code Review Task */}
                   {task.formatType === 'code_review' && task.code && (
                     <div className="space-y-4">
@@ -411,22 +506,120 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                   )}
 
                   {/* Matching Task */}
-                  {task.formatType === 'matching' && task.matchingLeft && task.matchingRight && (
+                  {task.formatType === 'matching' && task.matchingLeft && task.matchingRight && 
+                   task.matchingLeft.length > 0 && task.matchingRight.length > 0 && (
                     <div className="space-y-4">
+                      {/* Validation warning for incomplete matching tasks */}
+                      {(task.matchingLeft.length < 5 || task.matchingRight.length < 5 || 
+                        task.matchingLeft.some(item => !item.id || !item.text) ||
+                        task.matchingRight.some(item => !item.id || !item.text)) && (
+                        <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                          <p className="text-yellow-400 text-sm font-semibold mb-2">
+                            ⚠️ Incomplete Matching Task Detected
+                          </p>
+                          <p className="text-yellow-300 text-sm mb-2">
+                            This matching task doesn't have all required items:
+                          </p>
+                          <ul className="text-yellow-300 text-sm space-y-1 ml-4">
+                            {task.matchingLeft.length < 5 && (
+                              <li>• Left column has {task.matchingLeft.length} items (expected 5)</li>
+                            )}
+                            {task.matchingRight.length < 5 && (
+                              <li>• Right column has {task.matchingRight.length} items (expected 5)</li>
+                            )}
+                            {task.matchingLeft.some(item => !item.id || !item.text) && (
+                              <li>• Some left items are missing ID or text fields</li>
+                            )}
+                            {task.matchingRight.some(item => !item.id || !item.text) && (
+                              <li>• Some right items are missing ID or text fields</li>
+                            )}
+                          </ul>
+                          <p className="text-yellow-300 text-sm mt-3">
+                            You can still attempt to match the available items, or use the text input fallback below.
+                          </p>
+                          {(() => {
+                            // Log incomplete task data for debugging
+                            console.warn('Incomplete matching task detected:', {
+                              taskId: task.id,
+                              title: task.title,
+                              matchingLeftCount: task.matchingLeft.length,
+                              matchingRightCount: task.matchingRight.length,
+                              matchingLeft: task.matchingLeft,
+                              matchingRight: task.matchingRight,
+                              correctMatches: task.correctMatches,
+                              hasInvalidLeftItems: task.matchingLeft.some(item => !item.id || !item.text),
+                              hasInvalidRightItems: task.matchingRight.some(item => !item.id || !item.text)
+                            });
+                            return null;
+                          })()}
+                        </div>
+                      )}
+                      
                       <p className="text-sm text-gray-400">
                         Match each item on the left with the correct item on the right
                       </p>
-                      <div className="grid grid-cols-2 gap-4">
-                        {/* Left column */}
-                        <div className="space-y-2">
-                          {task.matchingLeft.map((leftItem) => {
+                      
+                      {/* Enhanced Progress indicator */}
+                      <div className="bg-gray-900 border border-gray-700 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm text-gray-400">Matching Progress:</span>
+                          <span className="text-sm font-semibold text-indigo-400">
+                            {(() => {
+                              const matches = solution ? JSON.parse(solution || '{}') : {};
+                              const completed = Object.values(matches).filter(v => v).length;
+                              const total = task.matchingLeft.length;
+                              const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+                              return `${completed} / ${total} matched (${percentage}%)`;
+                            })()}
+                          </span>
+                        </div>
+                        {/* Progress bar */}
+                        <div className="w-full bg-gray-800 rounded-full h-2.5">
+                          <div 
+                            className="bg-indigo-500 h-2.5 rounded-full transition-all duration-300"
+                            style={{
+                              width: `${(() => {
+                                const matches = solution ? JSON.parse(solution || '{}') : {};
+                                const completed = Object.values(matches).filter(v => v).length;
+                                const total = task.matchingLeft.length;
+                                return total > 0 ? (completed / total) * 100 : 0;
+                              })()}%`
+                            }}
+                          />
+                        </div>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Left column - Items to match */}
+                        <div className="space-y-3">
+                          <h4 className="text-sm font-semibold text-white mb-2">
+                            Items to Match ({task.matchingLeft.length} items)
+                          </h4>
+                          {task.matchingLeft.slice(0, 5).map((leftItem, index) => {
                             const matches = solution ? JSON.parse(solution || '{}') : {};
                             const selectedRightId = matches[leftItem.id];
-                            const selectedRight = task.matchingRight?.find(r => r.id === selectedRightId);
+                            const isMatched = !!selectedRightId;
                             
                             return (
-                              <div key={leftItem.id} className="bg-gray-900 border border-gray-600 rounded-lg p-3">
-                                <div className="text-white font-semibold mb-2">{leftItem.text}</div>
+                              <div 
+                                key={leftItem.id} 
+                                className={`bg-gray-900 border-2 rounded-lg p-4 transition-all duration-200 ${
+                                  isMatched 
+                                    ? 'border-green-500 shadow-lg shadow-green-500/20' 
+                                    : 'border-gray-600 hover:border-gray-500'
+                                }`}
+                              >
+                                <div className="flex items-start gap-3 mb-3">
+                                  <span className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${
+                                    isMatched 
+                                      ? 'bg-green-500 text-white' 
+                                      : 'bg-indigo-600 text-white'
+                                  }`}>
+                                    {isMatched ? '✓' : index + 1}
+                                  </span>
+                                  <div className="flex-1 text-white font-medium">{leftItem.text}</div>
+                                </div>
+                                
                                 <select
                                   value={selectedRightId || ''}
                                   onChange={(e) => {
@@ -435,10 +628,14 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                                     setSolution(JSON.stringify(matches));
                                   }}
                                   disabled={isSubmitting || task.status === 'completed'}
-                                  className="w-full bg-gray-800 border border-indigo-500 rounded text-white p-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                  className={`w-full bg-gray-800 border-2 rounded-lg text-white p-3 focus:ring-2 focus:ring-indigo-500 transition-all ${
+                                    isMatched 
+                                      ? 'border-green-500 bg-green-900/20' 
+                                      : 'border-gray-600 hover:border-indigo-500'
+                                  }`}
                                 >
                                   <option value="">Select a match...</option>
-                                  {task.matchingRight?.map((rightItem) => (
+                                  {task.matchingRight?.slice(0, 5).map((rightItem) => (
                                     <option key={rightItem.id} value={rightItem.id}>
                                       {rightItem.text}
                                     </option>
@@ -449,21 +646,97 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                           })}
                         </div>
                         
-                        {/* Right column - reference */}
-                        <div className="space-y-2">
-                          <div className="text-sm text-gray-400 mb-2">Available options:</div>
-                          {task.matchingRight.map((rightItem) => (
-                            <div key={rightItem.id} className="bg-gray-800 border border-gray-700 rounded-lg p-3">
-                              <div className="text-gray-300 text-sm">{rightItem.text}</div>
-                            </div>
-                          ))}
+                        {/* Right column - Available options reference */}
+                        <div className="space-y-3">
+                          <h4 className="text-sm font-semibold text-white mb-2">
+                            Available Options ({task.matchingRight.length} items)
+                          </h4>
+                          {task.matchingRight.slice(0, 5).map((rightItem, index) => {
+                            const matches = solution ? JSON.parse(solution || '{}') : {};
+                            const isUsed = Object.values(matches).includes(rightItem.id);
+                            const usageCount = Object.values(matches).filter(v => v === rightItem.id).length;
+                            
+                            return (
+                              <div 
+                                key={rightItem.id} 
+                                className={`bg-gray-800 border-2 rounded-lg p-4 transition-all duration-200 ${
+                                  isUsed 
+                                    ? 'border-green-500 shadow-lg shadow-green-500/20' 
+                                    : 'border-gray-700'
+                                }`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <span className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${
+                                    isUsed 
+                                      ? 'bg-green-500 text-white' 
+                                      : 'bg-gray-700 text-gray-300'
+                                  }`}>
+                                    {String.fromCharCode(65 + index)}
+                                  </span>
+                                  <div className={`flex-1 transition-colors ${
+                                    isUsed ? 'text-white font-medium' : 'text-gray-300'
+                                  }`}>
+                                    {rightItem.text}
+                                  </div>
+                                  {isUsed && (
+                                    <div className="flex items-center gap-1">
+                                      <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
+                                      {usageCount > 1 && (
+                                        <span className="text-xs text-yellow-400 font-semibold">
+                                          ×{usageCount}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
+                      
+                      {/* Fallback text input for incomplete matching tasks */}
+                      {(task.matchingLeft.length < 5 || task.matchingRight.length < 5 || 
+                        task.matchingLeft.some(item => !item.id || !item.text) ||
+                        task.matchingRight.some(item => !item.id || !item.text)) && (
+                        <div className="bg-gray-900/50 border border-gray-700 rounded-lg p-4">
+                          <h4 className="text-sm font-semibold text-white mb-2">Alternative: Text Answer</h4>
+                          <p className="text-sm text-gray-400 mb-3">
+                            If you prefer, you can provide your answer as text instead of using the matching interface:
+                          </p>
+                          <textarea
+                            rows={6}
+                            className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                            placeholder="Enter your matching answers as text (e.g., '1-A, 2-C, 3-B...' or describe your reasoning)..."
+                            value={solution && !solution.startsWith('{') ? solution : ''}
+                            onChange={(e) => setSolution(e.target.value)}
+                            disabled={isSubmitting || task.status === 'completed'}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Fallback for incomplete fill in blank tasks */}
+                  {task.formatType === 'fill_in_blank' && (!task.blankText || !task.blanks || task.blanks.length < 3) && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                      <p className="text-yellow-400 text-sm mb-3">
+                        ⚠️ This fill-in-blank task is incomplete. Please provide a text answer instead.
+                      </p>
+                      <textarea
+                        id="solution"
+                        rows={10}
+                        className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                        placeholder="Enter your solution here..."
+                        value={solution}
+                        onChange={(e) => setSolution(e.target.value)}
+                        disabled={isSubmitting || task.status === 'completed'}
+                      />
                     </div>
                   )}
 
                   {/* Fill in the Blank */}
-                  {task.formatType === 'fill_in_blank' && task.blankText && task.blanks && (
+                  {task.formatType === 'fill_in_blank' && task.blankText && task.blanks && task.blanks.length >= 3 && (
                     <div className="space-y-4">
                       <div className="bg-gray-900 border border-gray-600 rounded-lg p-4">
                         <div className="text-white whitespace-pre-wrap font-mono text-sm">
@@ -497,6 +770,25 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                       <p className="text-sm text-gray-400">
                         Fill in all the blanks with appropriate answers
                       </p>
+                    </div>
+                  )}
+
+                  {/* Fallback for incomplete matching tasks */}
+                  {task.formatType === 'matching' && (!task.matchingLeft || !task.matchingRight || 
+                   task.matchingLeft.length === 0 || task.matchingRight.length === 0) && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4">
+                      <p className="text-yellow-400 text-sm mb-3">
+                        ⚠️ This matching task is incomplete. Please provide a text answer instead.
+                      </p>
+                      <textarea
+                        id="solution"
+                        rows={10}
+                        className="w-full bg-gray-900 border border-gray-600 rounded-lg text-white p-4 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out placeholder-gray-500 font-mono text-sm"
+                        placeholder="Enter your solution here..."
+                        value={solution}
+                        onChange={(e) => setSolution(e.target.value)}
+                        disabled={isSubmitting || task.status === 'completed'}
+                      />
                     </div>
                   )}
 
@@ -546,7 +838,7 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
           ) : (
             // Grading Result View
             <div className="p-6 space-y-6">
-              {/* Success Animation */}
+              {/* Result Animation */}
               <div className="text-center py-8">
                 {submitResult.leveledUp ? (
                   <motion.div
@@ -565,7 +857,7 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                       You reached Level {submitResult.newLevel}!
                     </p>
                   </motion.div>
-                ) : (
+                ) : submitResult.score >= 70 ? (
                   <motion.div
                     initial={{ scale: 0, rotate: -180 }}
                     animate={{ scale: 1, rotate: 0 }}
@@ -573,6 +865,16 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                   >
                     <CheckCircle className="w-20 h-20 text-green-400 mx-auto mb-4" />
                     <h3 className="text-3xl font-bold text-white mb-2">Task Completed!</h3>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+                  >
+                    <X className="w-20 h-20 text-red-400 mx-auto mb-4" />
+                    <h3 className="text-3xl font-bold text-white mb-2">Task Failed</h3>
+                    <p className="text-gray-400">Try again to earn XP</p>
                   </motion.div>
                 )}
                 
@@ -599,9 +901,9 @@ const TaskDetailModal: React.FC<TaskDetailModalProps> = ({
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
                       transition={{ delay: 0.7, type: 'spring' }}
-                      className="text-3xl font-bold text-green-400"
+                      className={`text-3xl font-bold ${submitResult.xpGained > 0 ? 'text-green-400' : 'text-gray-400'}`}
                     >
-                      +{submitResult.xpGained}
+                      +{submitResult.xpGained ?? 0}
                     </motion.p>
                   </div>
                 </motion.div>

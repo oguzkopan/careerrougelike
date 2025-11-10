@@ -3,7 +3,7 @@ import { Users, MessageCircle, CheckCircle2, Loader2, Mic, X, Target, Lightbulb,
 import Button from './shared/Button';
 import VoiceRecorder from './shared/VoiceRecorder';
 import { useToast } from './shared/Toast';
-import { leaveMeeting } from '../services/backendApiService';
+import { getMeetingMessages, leaveMeeting } from '../services/backendApiService';
 import './meetings.css';
 
 interface Participant {
@@ -30,19 +30,14 @@ interface MeetingData {
   topics: Topic[];
   objective: string;
   duration_minutes: number;
+  current_topic_index?: number;
+  responses?: any[];
 }
 
 interface AIResponse {
   participant_name: string;
   response: string;
   sentiment: string;
-}
-
-interface Message {
-  type: 'topic' | 'player' | 'ai';
-  content: string;
-  participant?: string;
-  sentiment?: string;
 }
 
 interface MeetingViewProps {
@@ -56,6 +51,7 @@ interface MeetingViewProps {
   }>;
   onEndMeeting: () => void;
   onLeaveMeeting?: (summary: any) => void;
+  isProcessing?: boolean;
 }
 
 const MeetingView: React.FC<MeetingViewProps> = ({
@@ -64,169 +60,263 @@ const MeetingView: React.FC<MeetingViewProps> = ({
   onRespond,
   onEndMeeting,
   onLeaveMeeting,
+  isProcessing,
 }) => {
-  const [currentTopicIndex, setCurrentTopicIndex] = useState(0);
+  const [currentTopicIndex, setCurrentTopicIndex] = useState(meetingData.current_topic_index || 0);
   const [playerResponse, setPlayerResponse] = useState('');
-  const [conversationHistory, setConversationHistory] = useState<Message[]>([]);
+  const [conversationHistory, setConversationHistory] = useState<Array<{
+    type: 'topic' | 'player' | 'ai';
+    content: string;
+    participant?: string;
+    sentiment?: string;
+  }>>([]);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [meetingComplete, setMeetingComplete] = useState(false);
-  const [isPlayerTurn, setIsPlayerTurn] = useState(false);
+  const [isPlayerTurn, setIsPlayerTurn] = useState(false); // Start with false - AI talks first
   const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
-  const [isAISpeaking, setIsAISpeaking] = useState(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false); // Track if messages are being animated
+  const [lastMessageId, setLastMessageId] = useState<string | null>(null); // Track last seen message for polling
   const { showToast } = useToast();
 
   const currentTopic = meetingData.topics[currentTopicIndex];
   const progress = ((currentTopicIndex + 1) / meetingData.topics.length) * 100;
-  const conversationEndRef = useRef<HTMLDivElement>(null);
+  
+  // Determine if input should be disabled
+  const isInputDisabled = isSubmitting || (isProcessing ?? false) || meetingComplete || !isPlayerTurn || isLoadingMessages;
 
-  // Initialize with first topic
+  // Initialize conversation with meeting data or first topic - with animated message appearance
+  // Requirements: 2.2, 2.3, 2.6, 2.7, 3.1, 3.2, 3.9
   useEffect(() => {
-    if (conversationHistory.length === 0 && currentTopic) {
-      // Add topic introduction
-      setConversationHistory([{
-        type: 'topic',
-        content: currentTopic.question,
-      }]);
+    if (conversationHistory.length === 0) {
+      // Check if meeting data has conversation_history from backend
+      const backendHistory = (meetingData as any).conversation_history;
+      const backendIsPlayerTurn = (meetingData as any).is_player_turn;
+      const backendCurrentTopicIndex = (meetingData as any).current_topic_index;
+      const backendStatus = (meetingData as any).status;
       
-      // After a brief delay, enable player turn
-      setTimeout(() => {
+      // Restore current topic index and turn state from backend
+      if (backendCurrentTopicIndex !== undefined) {
+        setCurrentTopicIndex(backendCurrentTopicIndex);
+        console.log('[MeetingView] Restored topic index:', backendCurrentTopicIndex);
+      }
+      
+      // Handle meeting completion state
+      if (backendStatus === 'completed') {
+        setMeetingComplete(true);
+        console.log('[MeetingView] Meeting is already completed');
+      }
+      
+      if (backendHistory && backendHistory.length > 0) {
+        setIsLoadingMessages(true);
+        setIsPlayerTurn(false);
+        
+        // Convert backend conversation history to frontend format
+        const convertedHistory = backendHistory.map((msg: any) => {
+          if (msg.type === 'topic_intro') {
+            return {
+              type: 'topic' as const,
+              content: msg.content,
+            };
+          } else if (msg.type === 'ai_response') {
+            return {
+              type: 'ai' as const,
+              content: msg.content,
+              participant: msg.participant_name,
+              sentiment: msg.sentiment,
+            };
+          } else if (msg.type === 'player_response') {
+            return {
+              type: 'player' as const,
+              content: msg.content,
+            };
+          }
+          return null;
+        }).filter(Boolean);
+        
+        // Load all messages immediately for real-time feel
+        const loadMessages = async () => {
+          // Add all messages at once for instant display
+          setConversationHistory(convertedHistory);
+          
+          // After all messages are shown, restore player turn state
+          setIsLoadingMessages(false);
+          
+          // If backend says it's player's turn, enable input immediately
+          if (backendIsPlayerTurn) {
+            setIsPlayerTurn(true);
+            console.log('[MeetingView] Restored player turn state: true');
+          } else {
+            // Otherwise, polling will continue and pick up new messages
+            console.log('[MeetingView] All initial messages loaded, polling will continue...');
+          }
+        };
+        
+        loadMessages();
+        console.log('[MeetingView] Loading', convertedHistory.length, 'messages from backend');
+        
+        // Set last message ID for polling
+        if (backendHistory.length > 0) {
+          const lastMsg = backendHistory[backendHistory.length - 1];
+          setLastMessageId(lastMsg.id || null);
+        }
+      } else if (currentTopic) {
+        // Fallback: just show the topic
+        setConversationHistory([
+          {
+            type: 'topic',
+            content: currentTopic.question,
+          },
+        ]);
         setIsPlayerTurn(true);
-      }, 1000);
+      }
     }
-  }, [currentTopic, conversationHistory.length]);
+  }, [currentTopic, conversationHistory.length, meetingData]);
 
-  // Auto-scroll to latest message
+  // Poll for new AI messages while meeting is active
+  // Requirements: 3.3, 3.4, 3.6, 3.7, 3.9
   useEffect(() => {
-    conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversationHistory]);
-
-  // Add AI messages one by one with realistic delays
-  const addAIMessagesSequentially = async (aiResponses: AIResponse[]) => {
-    setIsAISpeaking(true);
-    setIsPlayerTurn(false);
-
-    for (let i = 0; i < aiResponses.length; i++) {
-      const response = aiResponses[i];
-      
-      // Wait before showing next message (1.5-2.5 seconds)
-      const delay = 1500 + Math.random() * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      // Add message to conversation
-      setConversationHistory(prev => [...prev, {
-        type: 'ai',
-        content: response.response,
-        participant: response.participant_name,
-        sentiment: response.sentiment,
-      }]);
+    // Stop polling only when meeting is complete
+    // Continue polling even during player turn, submission, or loading to catch all messages
+    if (meetingComplete) {
+      console.log('[MeetingView] Polling stopped - meeting complete');
+      return;
     }
 
-    setIsAISpeaking(false);
+    console.log('[MeetingView] 🔄 Starting polling for new messages...');
+    console.log('[MeetingView] 📊 Polling config:', {
+      sessionId,
+      meetingId: meetingData.id,
+      lastMessageId,
+      pollInterval: '2s'
+    });
     
-    // After all AI messages, enable player turn
-    setTimeout(() => {
-      setIsPlayerTurn(true);
-    }, 800);
-  };
+    // Poll every 2 seconds for new messages (faster polling for better UX)
+    const pollInterval = setInterval(async () => {
+      try {
+        console.log('[MeetingView] 🔍 Polling for messages since:', lastMessageId);
+        
+        // Fetch new messages since last seen message ID
+        const newMessages = await getMeetingMessages(sessionId, meetingData.id, lastMessageId);
+        
+        console.log('[MeetingView] 📨 Poll response:', {
+          messageCount: newMessages?.length || 0,
+          messages: newMessages
+        });
+        
+        if (newMessages && newMessages.length > 0) {
+          console.log('[MeetingView] ✅ Received', newMessages.length, 'new messages');
+          
+          // Track if we received player_turn signal
+          let receivedPlayerTurn = false;
+          const messagesToAdd: any[] = [];
+          
+          // Process all messages first (batch processing to avoid duplicates)
+          for (const msg of newMessages) {
+            // Update last message ID for all messages
+            setLastMessageId(msg.id);
+            
+            // Handle "player_turn" signal message
+            if (msg.type === 'player_turn') {
+              receivedPlayerTurn = true;
+              console.log('[MeetingView] Player turn signal received');
+              continue; // Don't display player_turn messages
+            }
+            
+            // Convert backend message format to frontend format
+            let convertedMsg = null;
+            
+            if (msg.type === 'topic_intro') {
+              convertedMsg = {
+                type: 'topic' as const,
+                content: msg.content,
+              };
+              // Update current topic index when new topic starts
+              const topicIndex = meetingData.topics.findIndex(t => msg.content.includes(t.question));
+              if (topicIndex >= 0) {
+                setCurrentTopicIndex(topicIndex);
+              }
+            } else if (msg.type === 'ai_response') {
+              convertedMsg = {
+                type: 'ai' as const,
+                content: msg.content,
+                participant: msg.participant_name,
+                sentiment: msg.sentiment,
+              };
+            }
+            
+            if (convertedMsg) {
+              messagesToAdd.push(convertedMsg);
+            }
+          }
+          
+          // Add all messages at once, checking for duplicates
+          if (messagesToAdd.length > 0) {
+            setConversationHistory(prev => {
+              // Create a set of existing message keys for duplicate detection
+              const existingKeys = new Set(
+                prev.map(m => `${m.type}-${m.participant || ''}-${m.content}`)
+              );
+              
+              // Filter out duplicates
+              const uniqueMessages = messagesToAdd.filter(m => {
+                const key = `${m.type}-${m.participant || ''}-${m.content}`;
+                if (existingKeys.has(key)) {
+                  console.log('[MeetingView] Skipping duplicate message');
+                  return false;
+                }
+                return true;
+              });
+              
+              if (uniqueMessages.length > 0) {
+                console.log('[MeetingView] Adding', uniqueMessages.length, 'unique messages');
+              }
+              
+              return [...prev, ...uniqueMessages];
+            });
+          }
+          
+          // Update turn state AFTER all messages are processed
+          if (receivedPlayerTurn) {
+            setIsPlayerTurn(true);
+            setIsLoadingMessages(false);
+            console.log('[MeetingView] Player turn enabled');
+          }
+          
+          // If we received messages but no player_turn signal, keep loading state
+          if (messagesToAdd.length > 0 && !receivedPlayerTurn) {
+            setIsLoadingMessages(false);
+          }
+        }
+      } catch (error) {
+        console.error('[MeetingView] ❌ Polling error:', error);
+        console.error('[MeetingView] 📊 Error details:', {
+          sessionId,
+          meetingId: meetingData.id,
+          lastMessageId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        // Silently handle errors - polling will retry on next interval
+      }
+    }, 2000); // Poll every 2 seconds for faster updates
+
+    return () => {
+      console.log('[MeetingView] ⏹️ Stopping polling');
+      clearInterval(pollInterval);
+    };
+  }, [meetingComplete, sessionId, meetingData.id, lastMessageId, meetingData.topics]);
 
   const handleVoiceRecordingComplete = (audioBlob: Blob, audioUrl: string) => {
+    // Store the audio blob for future use (e.g., sending to backend)
+    // For now, we'll use a placeholder text
     setPlayerResponse('[Voice response recorded]');
     setShowVoiceRecorder(false);
     showToast('Voice response recorded. Click Submit to continue.', 'success');
+    
+    // In a real implementation, you would store the audioBlob and audioUrl
+    // to send to the backend for transcription/processing
     console.log('Audio recorded:', { audioBlob, audioUrl });
-  };
-
-  const handleSubmitResponse = async () => {
-    if (!playerResponse.trim() || isSubmitting || !isPlayerTurn || !currentTopic) return;
-
-    setIsSubmitting(true);
-    setIsPlayerTurn(false);
-
-    try {
-      // Add player response to conversation
-      setConversationHistory(prev => [...prev, {
-        type: 'player',
-        content: playerResponse,
-      }]);
-
-      const responseToSubmit = playerResponse;
-      setPlayerResponse('');
-
-      // Submit response to backend
-      const result = await onRespond(currentTopic.id, responseToSubmit);
-
-      // Check if meeting is complete
-      if (result.meeting_complete) {
-        setMeetingComplete(true);
-        showToast('Meeting complete! Great job.', 'success');
-      } else {
-        // Move to next topic
-        const nextIndex = result.next_topic_index ?? currentTopicIndex + 1;
-        
-        // Add AI responses one by one
-        if (result.ai_responses && result.ai_responses.length > 0) {
-          await addAIMessagesSequentially(result.ai_responses);
-        }
-        
-        // Check if we're moving to a new topic
-        if (nextIndex !== currentTopicIndex && nextIndex < meetingData.topics.length) {
-          // Wait a bit before showing new topic
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          // Update topic index
-          setCurrentTopicIndex(nextIndex);
-          
-          // Start the new topic on backend and get AI discussion
-          try {
-            const { startMeetingTopic } = await import('../services/backendApiService');
-            const topicResult = await startMeetingTopic(sessionId, meetingData.id, nextIndex);
-            
-            // Add all messages from the topic start (topic intro + AI discussion)
-            for (const msg of topicResult.messages) {
-              if (msg.type === 'topic_intro') {
-                setConversationHistory(prev => [...prev, {
-                  type: 'topic',
-                  content: msg.content,
-                }]);
-                await new Promise(resolve => setTimeout(resolve, 800));
-              } else if (msg.type === 'ai_response') {
-                setConversationHistory(prev => [...prev, {
-                  type: 'ai',
-                  content: msg.content,
-                  participant: msg.participant_name,
-                  sentiment: msg.sentiment,
-                }]);
-                await new Promise(resolve => setTimeout(resolve, 1500 + Math.random() * 1000));
-              }
-            }
-            
-            // Enable player turn after all messages
-            setIsPlayerTurn(true);
-          } catch (error) {
-            console.log('Start topic endpoint not available (404) - backend needs redeployment');
-            
-            // Fallback: just show the topic without AI discussion
-            // This works until backend is redeployed with the new endpoint
-            const newTopic = meetingData.topics[nextIndex];
-            setConversationHistory(prev => [...prev, {
-              type: 'topic',
-              content: newTopic.question,
-            }]);
-            setIsPlayerTurn(true);
-            
-            // Don't show error toast - fallback works fine
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to submit response:', error);
-      showToast('Failed to submit response. Please try again.', 'error');
-      setIsPlayerTurn(true);
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   const handleLeaveMeetingClick = () => {
@@ -238,12 +328,16 @@ const MeetingView: React.FC<MeetingViewProps> = ({
     setShowLeaveConfirmation(false);
 
     try {
+      // Call the leave meeting API
       const summary = await leaveMeeting(sessionId, meetingData.id);
+      
       showToast('You left the meeting early. Partial XP awarded.', 'info');
       
+      // Call the onLeaveMeeting callback with the partial summary
       if (onLeaveMeeting) {
         onLeaveMeeting(summary);
       } else {
+        // Fallback to onEndMeeting if onLeaveMeeting is not provided
         onEndMeeting();
       }
     } catch (error) {
@@ -257,6 +351,70 @@ const MeetingView: React.FC<MeetingViewProps> = ({
     setShowLeaveConfirmation(false);
   };
 
+  const handleSubmitResponse = async () => {
+    if (!playerResponse.trim() || isInputDisabled || !currentTopic) return;
+
+    setIsSubmitting(true);
+    setIsPlayerTurn(false); // Disable input while processing
+
+    try {
+      // Add player response to conversation
+      const playerMessage = {
+        type: 'player' as const,
+        content: playerResponse,
+      };
+      
+      setConversationHistory(prev => [...prev, playerMessage]);
+
+      // Clear input immediately after adding to conversation
+      const responseToSubmit = playerResponse;
+      setPlayerResponse('');
+
+      // Submit response - backend will handle AI reactions and next topic
+      const result = await onRespond(currentTopic.id, responseToSubmit);
+
+      console.log('[MeetingView] Response submitted, result:', result);
+
+      // DON'T process result.ai_responses or add them to conversation
+      // Polling will fetch all new messages automatically
+      // This prevents duplicate messages
+      
+      // Update meeting completion state
+      if (result.meeting_complete) {
+        setMeetingComplete(true);
+        setIsPlayerTurn(false);
+        showToast('Meeting complete! Great job.', 'success');
+      } else {
+        // Backend has started the next topic and generated AI messages
+        // Polling will pick them up automatically
+        // Just update the topic index if provided
+        if (result.next_topic_index !== undefined) {
+          setCurrentTopicIndex(result.next_topic_index);
+        }
+        
+        // Set loading state while waiting for AI messages
+        setIsLoadingMessages(true);
+        
+        // Don't set isPlayerTurn here - let polling handle it via player_turn signal
+        console.log('[MeetingView] Waiting for AI discussion via polling...');
+      }
+    } catch (error) {
+      console.error('Failed to submit response:', error);
+      showToast('Failed to submit response. Please try again.', 'error');
+      // Re-enable player turn on error
+      setIsPlayerTurn(true);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const conversationEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to latest message
+  useEffect(() => {
+    conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [conversationHistory]);
+
   const getParticipantAvatar = (name: string, avatarColor?: string) => {
     const initials = name
       .split(' ')
@@ -265,7 +423,15 @@ const MeetingView: React.FC<MeetingViewProps> = ({
       .toUpperCase()
       .slice(0, 2);
     
-    const defaultColors = ['#3B82F6', '#10B981', '#8B5CF6', '#EC4899', '#F59E0B', '#6366F1'];
+    const defaultColors = [
+      '#3B82F6',
+      '#10B981',
+      '#8B5CF6',
+      '#EC4899',
+      '#F59E0B',
+      '#6366F1',
+    ];
+    
     const colorIndex = name.charCodeAt(0) % defaultColors.length;
     const bgColor = avatarColor || defaultColors[colorIndex];
     
@@ -278,8 +444,6 @@ const MeetingView: React.FC<MeetingViewProps> = ({
       </div>
     );
   };
-
-  const isInputDisabled = isSubmitting || meetingComplete || !isPlayerTurn || isAISpeaking;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white">
@@ -297,6 +461,7 @@ const MeetingView: React.FC<MeetingViewProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-4">
+              {/* Progress Indicator */}
               <div className="text-right">
                 <p className="text-sm text-gray-400">
                   Topic {currentTopicIndex + 1} of {meetingData.topics.length}
@@ -342,13 +507,19 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                 Participants
               </h3>
               <div className="space-y-3">
-                {meetingData.participants.map((participant) => (
+                {meetingData.participants.map((participant, index) => (
                   <div key={participant.id} className="participant-list-item flex items-start gap-3">
                     {getParticipantAvatar(participant.name, participant.avatar_color)}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-white truncate">{participant.name}</p>
-                      <p className="text-xs text-gray-400 truncate">{participant.role}</p>
-                      <p className="text-xs text-purple-400 mt-1 capitalize">{participant.personality}</p>
+                      <p className="text-sm font-semibold text-white truncate">
+                        {participant.name}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">
+                        {participant.role}
+                      </p>
+                      <p className="text-xs text-purple-400 mt-1 capitalize">
+                        {participant.personality}
+                      </p>
                     </div>
                   </div>
                 ))}
@@ -422,8 +593,18 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                   </div>
                 ))}
 
-                {/* AI Speaking Indicator */}
-                {isAISpeaking && (
+                {/* Removed typing indicators - messages appear directly via polling */}
+
+                {/* Turn management UI - Requirements: 2.3, 2.7, 3.7 */}
+                {/* Display clear indicator when it's player's turn AND not loading messages */}
+                {!meetingComplete && isPlayerTurn && !isLoadingMessages && conversationHistory.length > 0 && (
+                  <div className="your-turn-indicator bg-indigo-500/10 border border-indigo-500/50 rounded-lg p-3 text-center">
+                    <p className="text-indigo-400 font-medium text-sm">⏳ Your turn to speak</p>
+                  </div>
+                )}
+                
+                {/* Show "Others are speaking" when messages are being loaded */}
+                {!meetingComplete && isLoadingMessages && (
                   <div className="bg-gray-700/30 border border-gray-600/30 rounded-lg p-3 text-center">
                     <p className="text-gray-400 font-medium text-sm flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -432,19 +613,13 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                   </div>
                 )}
 
-                {/* Your Turn Indicator - Only show when it's actually player's turn */}
-                {!meetingComplete && isPlayerTurn && !isAISpeaking && conversationHistory.length > 0 && (
-                  <div className="your-turn-indicator bg-indigo-500/10 border border-indigo-500/50 rounded-lg p-3 text-center">
-                    <p className="text-indigo-400 font-medium text-sm">⏳ Your turn to speak</p>
-                  </div>
-                )}
-
                 <div ref={conversationEndRef} />
               </div>
             </div>
 
-            {/* Response Input */}
-            {!meetingComplete && (
+            {/* Response Input - Only show when it's player's turn */}
+            {/* Requirements: 2.3, 2.7, 3.7 - Enable input immediately when player turn signal received */}
+            {!meetingComplete && isPlayerTurn && (
               <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 rounded-lg p-4">
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -464,6 +639,7 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                     )}
                   </div>
 
+                  {/* Voice Recorder */}
                   {showVoiceRecorder && (
                     <VoiceRecorder
                       onRecordingComplete={handleVoiceRecordingComplete}
@@ -472,17 +648,19 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                     />
                   )}
 
+                  {/* Text Input */}
                   {!showVoiceRecorder && (
                     <>
                       <textarea
                         value={playerResponse}
                         onChange={(e) => setPlayerResponse(e.target.value)}
                         onKeyDown={(e) => {
+                          // Allow Ctrl+Enter or Cmd+Enter to submit
                           if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && playerResponse.trim() && !isInputDisabled) {
                             handleSubmitResponse();
                           }
                         }}
-                        placeholder={isInputDisabled ? "Please wait for your turn..." : "Type your response to the discussion topic..."}
+                        placeholder={isInputDisabled ? "Please wait..." : "Type your response to the discussion topic..."}
                         className="w-full h-24 px-3 py-2 bg-gray-900/50 border border-gray-600 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none disabled:opacity-50 disabled:cursor-not-allowed"
                         disabled={isInputDisabled}
                       />
@@ -513,6 +691,18 @@ const MeetingView: React.FC<MeetingViewProps> = ({
                       </div>
                     </>
                   )}
+                </div>
+              </div>
+            )}
+            
+            {/* Input Disabled Message - Show when not player's turn */}
+            {/* Requirements: 2.3, 2.7, 3.7 - Disable input when not player's turn */}
+            {!meetingComplete && !isPlayerTurn && (
+              <div className="bg-gray-800/30 backdrop-blur-sm border border-gray-700/30 rounded-lg p-4">
+                <div className="text-center">
+                  <p className="text-sm text-gray-500">
+                    Input disabled - waiting for your turn to speak
+                  </p>
                 </div>
               </div>
             )}

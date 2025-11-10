@@ -74,16 +74,26 @@ performance_review:
 - Receptiveness to feedback
 - Professional maturity
 
-SCORING RUBRIC (0-100):
+SCORING RUBRIC (10-100):
 
-90-100 (Exceptional):
-- All responses highly relevant and insightful
-- Excellent professionalism and communication
-- Significant contributions that advanced discussion
+IMPORTANT: Use the FULL range from 10 to 100. Perfect participation should score 95-100, not just 80-90.
+
+95-100 (Perfect/Exceptional):
+- All responses highly relevant, insightful, and demonstrate expertise
+- Outstanding professionalism and communication
+- Significant contributions that advanced discussion substantially
 - Proactive engagement and leadership
-- Clear impact on meeting outcomes
+- Clear, measurable impact on meeting outcomes
+- Goes above and beyond expectations
 
-75-89 (Strong):
+85-94 (Excellent):
+- Nearly all responses highly relevant and valuable
+- Excellent professionalism and clarity
+- Strong contributions that moved discussion forward
+- Very consistent engagement
+- Strong positive impact on meeting
+
+75-84 (Strong):
 - Most responses relevant and valuable
 - Good professionalism and clarity
 - Solid contributions to discussion
@@ -104,7 +114,7 @@ SCORING RUBRIC (0-100):
 - Minimal engagement
 - Marginal impact on meeting
 
-0-44 (Poor):
+10-44 (Poor):
 - Many responses irrelevant or inappropriate
 - Professionalism concerns
 - Little to no valuable contribution
@@ -571,16 +581,19 @@ def post_process_evaluation_result(
     if 'timestamp' not in evaluation:
         evaluation['timestamp'] = datetime.utcnow().isoformat()
     
+    # Ensure score is an integer
+    evaluation['score'] = int(evaluation.get('score', 70))
+    
     # Override score if provided (for testing)
     if score_override is not None:
-        evaluation['score'] = score_override
+        evaluation['score'] = int(score_override)
     
     # Recalculate XP to ensure consistency
-    evaluation['xp_earned'] = calculate_xp_for_score(
+    evaluation['xp_earned'] = int(calculate_xp_for_score(
         evaluation['score'],
         meeting_type,
         player_level
-    )
+    ))
     
     # Ensure participation level is set
     if 'participation_level' not in evaluation:

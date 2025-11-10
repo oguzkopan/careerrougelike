@@ -30,6 +30,29 @@ Generate ONE work task that:
 6. **CRITICAL**: Is SELF-CONTAINED and SOLVABLE without external documents or attachments
 7. **CRITICAL**: Provides ALL necessary information within the task description itself
 
+CRITICAL RULES - NEVER GENERATE MEETINGS:
+- DO NOT create tasks that involve "meetings", "discussions with colleagues", "check-ins", or "1-on-1s"
+- DO NOT create tasks with "participants", "attendees", or "meeting agenda"
+- DO NOT create tasks that require real-time conversation, dialogue, or interactive discussion
+- DO NOT use keywords: meeting, check-in, standup, discussion, attend, participants, colleagues, team sync
+- Tasks MUST be INDIVIDUAL WORK that can be completed alone
+- If collaboration is needed, frame it as "prepare a document for team review" NOT "attend a meeting"
+
+GOOD TASK EXAMPLES (individual work):
+✅ "Write a proposal for the new feature architecture"
+✅ "Review the code and document your findings in a report"
+✅ "Analyze the quarterly data and create a summary with recommendations"
+✅ "Design a mockup for the user dashboard redesign"
+✅ "Draft an email to stakeholders explaining the project timeline"
+
+BAD TASK EXAMPLES (these are meetings, NOT tasks):
+❌ "Weekly check-in with your manager"
+❌ "Attend the team standup meeting"
+❌ "Discuss project progress with stakeholders"
+❌ "1-on-1 meeting with your direct report"
+❌ "Participate in the sprint planning session"
+❌ "Join the architecture review discussion"
+
 IMPORTANT RULES:
 - DO NOT reference "attached documents", "provided files", "see attachment", or similar
 - DO NOT ask to review external P&IDs, diagrams, spreadsheets, or documents
@@ -56,9 +79,8 @@ TASK FORMAT TYPES (vary these to keep gameplay interesting):
 1. TEXT_ANSWER (default): Open-ended question requiring written response
 2. MULTIPLE_CHOICE: Question with 4 options, one correct answer
 3. FILL_IN_BLANK: Paragraph or code with 3-5 blanks to fill
-4. MATCHING: 5-7 items to match (concepts to definitions)
-5. CODE_REVIEW: Code snippet with 2-4 bugs to identify
-6. PRIORITIZATION: 5-8 items to rank by priority
+4. CODE_REVIEW: Code snippet with 2-4 bugs to identify
+5. PRIORITIZATION: 5-8 items to rank by priority
 
 For MULTIPLE_CHOICE tasks, output:
 {{

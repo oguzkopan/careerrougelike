@@ -7,6 +7,7 @@ This module orchestrates AI agents using Gemini API directly for reliability.
 import logging
 import json
 import re
+import time
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -293,12 +294,6 @@ Output ONLY the JSON array, no other text."""
                 score = 10
                 feedback_text = "Answer is off-topic and doesn't address the question."
                 logger.info(f"Question {q_id} auto-failed: irrelevant content detected")
-            # Check for comprehensive answers (auto-pass with high score)
-            elif word_count >= 30 and unique_words >= 20:
-                # Comprehensive answer with good vocabulary - likely a good answer
-                score = 80
-                feedback_text = "Comprehensive answer demonstrating good understanding and effort."
-                logger.info(f"Question {q_id} auto-passed: comprehensive answer ({word_count} words, {unique_words} unique)")
             else:
                 # Only use AI grading for potentially valid answers
                 prompt = f"""You are a balanced technical interviewer. Grade fairly - reward good answers but catch irrelevant ones.
@@ -319,9 +314,12 @@ GRADING SCALE:
 - 51-69: Somewhat relevant but lacks depth or detail
 - 70-79: Addresses question, shows basic understanding ✓ PASS
 - 80-89: Good answer with relevant details and examples ✓ PASS
-- 90-100: Excellent comprehensive answer ✓ PASS
+- 90-95: Excellent comprehensive answer with depth ✓ PASS
+- 96-100: Perfect answer, demonstrates mastery ✓ PASS
 
-BE FAIR: Reward genuine effort and understanding. Pass threshold is 70/100.
+BE FAIR AND GENEROUS: Reward genuine effort and understanding. Pass threshold is 70/100.
+IMPORTANT: For excellent answers that demonstrate deep understanding, you MUST give scores of 90-100.
+Do NOT cap scores at 85 - use the full 0-100 range appropriately.
 
 Output ONLY JSON:
 {{
@@ -337,18 +335,57 @@ Output ONLY JSON:
                     json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                     if json_match:
                         result = json.loads(json_match.group())
-                        score = result.get("score", 0)
+                        score = int(result.get("score", 0))
                         feedback_text = result.get("feedback", "No feedback provided")
+                        
+                        # Ensure score is in valid range
+                        score = max(0, min(100, score))
+                        
+                        logger.info(f"Question {q_id} AI-graded: {score}/100")
                     else:
-                        score = 30
-                        feedback_text = "Could not parse grading result, defaulting to fail"
-                    
-                    logger.info(f"Question {q_id} AI-graded: {score}/100")
+                        # Retry with more lenient JSON extraction
+                        logger.warning(f"Could not parse JSON for question {q_id}, attempting lenient extraction")
+                        try:
+                            # Try to extract score and feedback separately
+                            score_match = re.search(r'"score"\s*:\s*(\d+)', response_text)
+                            feedback_match = re.search(r'"feedback"\s*:\s*"([^"]+)"', response_text)
+                            
+                            if score_match:
+                                score = int(score_match.group(1))
+                                score = max(0, min(100, score))
+                                feedback_text = feedback_match.group(1) if feedback_match else "Grading completed"
+                                logger.info(f"Question {q_id} AI-graded (lenient): {score}/100")
+                            else:
+                                # Last resort: check if answer seems reasonable and give partial credit
+                                if word_count >= 20 and unique_words >= 10:
+                                    score = 50
+                                    feedback_text = "Could not parse grading result. Answer appears substantive, giving partial credit."
+                                    logger.warning(f"Question {q_id} fallback: giving 50 points for substantive answer")
+                                else:
+                                    score = 30
+                                    feedback_text = "Could not parse grading result and answer appears insufficient."
+                                    logger.warning(f"Question {q_id} fallback: giving 30 points")
+                        except Exception as parse_error:
+                            logger.error(f"Lenient parsing also failed for question {q_id}: {parse_error}")
+                            # Give partial credit if answer is substantive
+                            if word_count >= 20 and unique_words >= 10:
+                                score = 50
+                                feedback_text = "Grading error occurred. Answer appears substantive, giving partial credit."
+                            else:
+                                score = 30
+                                feedback_text = "Grading error occurred and answer appears insufficient."
                     
                 except Exception as e:
                     logger.error(f"Failed to grade question {q_id}: {e}")
-                    score = 30
-                    feedback_text = "Grading error occurred, defaulting to fail"
+                    # Give partial credit if answer is substantive
+                    if word_count >= 20 and unique_words >= 10:
+                        score = 50
+                        feedback_text = f"Grading error occurred ({str(e)}). Answer appears substantive, giving partial credit."
+                        logger.info(f"Question {q_id} exception fallback: giving 50 points for substantive answer")
+                    else:
+                        score = 30
+                        feedback_text = f"Grading error occurred ({str(e)}) and answer appears insufficient."
+                        logger.info(f"Question {q_id} exception fallback: giving 30 points")
             
             total_score += score
             feedback_list.append({
@@ -372,14 +409,260 @@ Output ONLY JSON:
     
     async def generate_task(self, session_id: str, job_title: str, company_name: str,
                            player_level: int, tasks_completed: int) -> Dict[str, Any]:
-        """Generate a work task with optional AI-generated image."""
+        """Generate a work task with comprehensive error handling, validation pipeline and retry logic."""
+        from shared.error_handler import (
+            get_error_metrics,
+            log_detailed_error,
+            handle_malformed_json,
+            create_fallback_task,
+            TaskGenerationError
+        )
+        from shared.task_validator import TaskValidator
+        from shared.metrics_tracker import get_metrics_tracker
+        
         logger.info(f"Generating task for session {session_id}, job {job_title}, level {player_level}")
+        
+        metrics = get_error_metrics()
+        validator = TaskValidator()
+        metrics_tracker = get_metrics_tracker()
         
         level_desc = "entry-level" if player_level <= 3 else ("mid-level" if player_level <= 7 else "senior")
         
         # Vary task format based on tasks completed (cycle through formats)
-        format_types = ["text_answer", "multiple_choice", "fill_in_blank", "matching", "code_review", "prioritization", "text_answer"]
+        format_types = ["text_answer", "multiple_choice", "fill_in_blank", "code_review", "prioritization", "text_answer"]
         format_type = format_types[tasks_completed % len(format_types)]
+        
+        # DEPRECATED: Matching tasks are no longer supported - convert to text_answer
+        if format_type == "matching":
+            logger.warning("Matching task format requested but is deprecated. Converting to text_answer.")
+            format_type = "text_answer"
+        
+        # Track generation attempt
+        metrics_tracker.record_task_generation_attempt(format_type)
+        
+        # Retry loop with max 3 attempts and exponential backoff
+        max_retries = 3
+        base_delay = 1.0
+        generation_start_time = time.time()
+        
+        for attempt in range(max_retries):
+            logger.info(f"Task generation attempt {attempt + 1}/{max_retries} for format '{format_type}'")
+            metrics.record_retry('task_generation', attempt + 1)
+            
+            try:
+                # Generate task using AI
+                task_data = await self._generate_task_with_ai(
+                    session_id, job_title, company_name, player_level,
+                    tasks_completed, level_desc, format_type
+                )
+                
+                # Validate the generated task
+                validation_result = validator.validate_task(task_data, format_type)
+                
+                if validation_result.is_valid:
+                    logger.info(f"Task validation successful on attempt {attempt + 1}")
+                    if validation_result.warnings:
+                        logger.warning(f"Task validation warnings: {validation_result.warnings}")
+                    
+                    # Record successful generation with latency
+                    generation_latency = time.time() - generation_start_time
+                    metrics_tracker.record_task_generation_success(
+                        format_type,
+                        generation_latency,
+                        session_id
+                    )
+                    
+                    # Generate image for the task if appropriate (non-blocking)
+                    try:
+                        from shared.image_generator import generate_task_image
+                        task_type = task_data.get('task_type', 'engineer')
+                        task_description = task_data.get('description', '')
+                        image_url = generate_task_image(task_type, task_description, job_title)
+                        if image_url:
+                            task_data['image_url'] = image_url
+                            logger.info(f"Generated image for task: {image_url}")
+                    except Exception as img_error:
+                        logger.warning(f"Failed to generate task image: {img_error}")
+                    
+                    return task_data
+                
+                # Validation failed - try repair
+                logger.warning(f"Task validation failed on attempt {attempt + 1}: {validation_result.errors}")
+                metrics.record_validation_failure(format_type, validation_result.errors, session_id)
+                metrics_tracker.record_task_validation_failure(format_type, validation_result.errors, session_id)
+                
+                # Attempt repair for matching tasks
+                if format_type == "matching":
+                    logger.info("Attempting to repair matching task...")
+                    repaired_task = validator.repair_matching_task(task_data)
+                    
+                    if repaired_task:
+                        # Re-validate repaired task
+                        repair_validation = validator.validate_task(repaired_task, format_type)
+                        if repair_validation.is_valid:
+                            logger.info("Successfully repaired matching task")
+                            
+                            # Record successful repair
+                            metrics_tracker.record_task_repair_attempt(format_type, True, session_id)
+                            
+                            # Record successful generation with latency
+                            generation_latency = time.time() - generation_start_time
+                            metrics_tracker.record_task_generation_success(
+                                format_type,
+                                generation_latency,
+                                session_id
+                            )
+                            
+                            return repaired_task
+                        else:
+                            logger.warning(f"Repaired task still invalid: {repair_validation.errors}")
+                            # Record failed repair
+                            metrics_tracker.record_task_repair_attempt(format_type, False, session_id)
+                    else:
+                        # Record failed repair (couldn't repair)
+                        metrics_tracker.record_task_repair_attempt(format_type, False, session_id)
+                
+                # If this is the last attempt, fall back to text_answer
+                if attempt == max_retries - 1:
+                    logger.error(
+                        f"Failed to generate valid {format_type} task after {max_retries} attempts. "
+                        f"Falling back to text_answer format."
+                    )
+                    metrics.record_task_generation_failure(
+                        format_type,
+                        'validation_failed_all_retries',
+                        session_id
+                    )
+                    metrics_tracker.record_task_generation_failure(
+                        format_type,
+                        'validation_failed_all_retries',
+                        session_id
+                    )
+                    
+                    # Record fallback usage
+                    metrics_tracker.record_task_fallback_usage(
+                        format_type,
+                        "text_answer",
+                        "validation_failed_all_retries",
+                        session_id
+                    )
+                    
+                    # Try generating a text_answer task as fallback
+                    try:
+                        fallback_task = await self._generate_task_with_ai(
+                            session_id, job_title, company_name, player_level,
+                            tasks_completed, level_desc, "text_answer"
+                        )
+                        fallback_validation = validator.validate_task(fallback_task, "text_answer")
+                        if fallback_validation.is_valid:
+                            logger.info("Successfully generated fallback text_answer task")
+                            
+                            # Record successful fallback generation
+                            generation_latency = time.time() - generation_start_time
+                            metrics_tracker.record_task_generation_success(
+                                "text_answer",
+                                generation_latency,
+                                session_id
+                            )
+                            
+                            return fallback_task
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback task generation also failed: {fallback_error}")
+                    
+                    # Ultimate fallback - return hardcoded task
+                    return create_fallback_task(
+                        session_id, job_title, company_name, player_level,
+                        tasks_completed, "All generation attempts failed"
+                    )
+                
+                # Exponential backoff before retry
+                delay = base_delay * (2 ** attempt)
+                logger.info(f"Waiting {delay}s before retry...")
+                import time
+                time.sleep(delay)
+                
+            except json.JSONDecodeError as e:
+                # Handle malformed JSON from agent
+                logger.error(f"Malformed JSON from agent on attempt {attempt + 1}: {str(e)}")
+                metrics.record_task_generation_failure(format_type, 'malformed_json', session_id)
+                log_detailed_error(
+                    'task_generation',
+                    e,
+                    {
+                        'session_id': session_id,
+                        'format_type': format_type,
+                        'attempt': attempt + 1
+                    }
+                )
+                
+                if attempt == max_retries - 1:
+                    return create_fallback_task(
+                        session_id, job_title, company_name, player_level,
+                        tasks_completed, "JSON parsing failed"
+                    )
+                
+            except TaskGenerationError as e:
+                # Handle task generation specific errors
+                logger.error(f"Task generation error on attempt {attempt + 1}: {str(e)}")
+                metrics.record_task_generation_failure(format_type, 'generation_error', session_id)
+                log_detailed_error(
+                    'task_generation',
+                    e,
+                    {
+                        'session_id': session_id,
+                        'format_type': format_type,
+                        'attempt': attempt + 1
+                    }
+                )
+                
+                if attempt == max_retries - 1:
+                    return create_fallback_task(
+                        session_id, job_title, company_name, player_level,
+                        tasks_completed, str(e)
+                    )
+                
+            except Exception as e:
+                # Handle unexpected errors
+                logger.error(f"Unexpected error on attempt {attempt + 1}: {str(e)}")
+                metrics.record_task_generation_failure(format_type, 'unexpected_error', session_id)
+                log_detailed_error(
+                    'task_generation',
+                    e,
+                    {
+                        'session_id': session_id,
+                        'format_type': format_type,
+                        'attempt': attempt + 1
+                    },
+                    include_traceback=True
+                )
+                
+                if attempt == max_retries - 1:
+                    return create_fallback_task(
+                        session_id, job_title, company_name, player_level,
+                        tasks_completed, f"Unexpected error: {type(e).__name__}"
+                    )
+        
+        # Should never reach here, but just in case
+        return create_fallback_task(
+            session_id, job_title, company_name, player_level,
+            tasks_completed, "Retry loop exhausted"
+        )
+    
+    async def _generate_task_with_ai(
+        self,
+        session_id: str,
+        job_title: str,
+        company_name: str,
+        player_level: int,
+        tasks_completed: int,
+        level_desc: str,
+        format_type: str
+    ) -> Dict[str, Any]:
+        """
+        Internal method to generate task using AI.
+        Separated for better error handling and testing.
+        """
+        from shared.error_handler import handle_malformed_json, TaskGenerationError
         
         prompt = f"""You are a work task generator. Create ONE realistic work task.
 
@@ -483,13 +766,23 @@ For MATCHING format, output:
     "left_3": "right_1",
     "left_4": "right_3"
   }},
-  "requirements": ["Context or background info"],
-  "acceptance_criteria": ["Must match all items correctly"],
+  "requirements": ["Match all items correctly based on your knowledge of {job_title}"],
+  "acceptance_criteria": ["All 5 matches must be correct"],
   "difficulty": 1-10,
   "xp_reward": 10-100,
   "status": "pending",
   "task_type": "designer|engineer|analyst|manager|sales|operations"
 }}
+
+CRITICAL MATCHING RULES:
+- MUST have EXACTLY 5 items in matching_left (no more, no less)
+- MUST have EXACTLY 5 items in matching_right (no more, no less)
+- Each item MUST have both "id" and "text" fields
+- Left IDs MUST be "left_0", "left_1", "left_2", "left_3", "left_4"
+- Right IDs MUST be "right_0", "right_1", "right_2", "right_3", "right_4"
+- correct_matches MUST map ALL 5 left items to right items
+- DO NOT generate empty arrays or missing items
+- Shuffle the right items so they don't align with left items by position
 
 For CODE_REVIEW format, output:
 {{
@@ -553,46 +846,33 @@ Set task_type based on the job category to enable appropriate visualizations."""
             response = self.model.generate_content(prompt)
             response_text = response.text.strip()
             
-            # Extract JSON from response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                task_data = json.loads(json_match.group())
-                logger.info(f"Generated task: {task_data.get('title', 'Unknown')}")
-                
-                # Generate image for the task if appropriate
-                task_type = task_data.get('task_type', 'engineer')
-                task_description = task_data.get('description', '')
-                
-                # Try to generate image (non-blocking, can fail gracefully)
-                try:
-                    from shared.image_generator import generate_task_image
-                    image_url = generate_task_image(task_type, task_description, job_title)
-                    if image_url:
-                        task_data['image_url'] = image_url
-                        logger.info(f"Generated image for task: {image_url}")
-                except Exception as img_error:
-                    logger.warning(f"Failed to generate task image: {img_error}")
-                    # Continue without image
-                
-                return task_data
-            else:
-                logger.error("No JSON found in task generation response")
-                raise ValueError("Invalid response format")
-                
+            # Log raw response for debugging (truncated)
+            logger.debug(f"AI response (first 200 chars): {response_text[:200]}")
+            
+            # Try to extract and parse JSON
+            task_data = handle_malformed_json(
+                response_text,
+                'task_generation',
+                {
+                    'session_id': session_id,
+                    'format_type': format_type,
+                    'job_title': job_title
+                }
+            )
+            
+            if not task_data:
+                raise TaskGenerationError("Failed to parse JSON from AI response")
+            
+            logger.info(f"Generated task: {task_data.get('title', 'Unknown')}")
+            return task_data
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error in task generation: {str(e)}")
+            raise TaskGenerationError(f"Malformed JSON from AI: {str(e)}")
+            
         except Exception as e:
-            logger.error(f"Failed to generate task: {e}")
-            # Return fallback task
-            return {
-                "id": f"task-{session_id}-{tasks_completed + 1}",
-                "title": f"Complete project task #{tasks_completed + 1}",
-                "description": f"Work on {job_title} responsibilities at {company_name}",
-                "requirements": ["Complete the task", "Submit solution"],
-                "acceptance_criteria": ["Task is complete", "Quality is good"],
-                "difficulty": min(player_level, 5),
-                "xp_reward": 50,
-                "status": "pending",
-                "task_type": "engineer"
-            }
+            logger.error(f"Unexpected error in AI task generation: {str(e)}")
+            raise TaskGenerationError(f"AI generation failed: {str(e)}")
     
     async def grade_task(self, session_id: str, task: Dict, solution: str,
                         player_level: int, current_xp: int) -> Dict[str, Any]:
@@ -739,7 +1019,7 @@ Grading scale:
                 json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
                 if json_match:
                     result = json.loads(json_match.group())
-                    score = result.get("score", 0)
+                    score = int(result.get("score", 0))
                     passed = result.get("passed", False)
                     feedback = result.get("feedback", "No feedback provided")
                 else:
@@ -923,7 +1203,7 @@ Grading scale:
                 
                 try:
                     result = json.loads(json_str)
-                    score = result.get("score", 0)
+                    score = int(result.get("score", 0))
                     passed = result.get("passed", False)
                     feedback = result.get("feedback", "No feedback provided")
                 except json.JSONDecodeError as je:
@@ -1566,7 +1846,7 @@ Output ONLY a JSON object (no markdown, no explanation):
     }}
   ],
   "objective": "What success looks like for this meeting",
-  "duration_minutes": 15-30
+  "estimated_duration_minutes": 15-30
 }}
 
 Make meetings realistic and appropriate for the job level:
@@ -1610,7 +1890,7 @@ Tailor meeting content to the job type."""
                         }
                     ],
                     "objective": "Align on current work and next steps",
-                    "duration_minutes": 20
+                    "estimated_duration_minutes": 20
                 }
         except Exception as e:
             logger.error(f"Failed to generate meeting: {e}")
@@ -1636,8 +1916,165 @@ Tailor meeting content to the job type."""
                     }
                 ],
                 "objective": "Align on current work and next steps",
-                "duration_minutes": 20
+                "estimated_duration_minutes": 20
             }
+    
+    async def generate_meeting_conversation(
+        self,
+        session_id: str,
+        meeting_type: str,
+        meeting_context: str,
+        current_topic: Dict[str, Any],
+        participants: List[Dict[str, Any]],
+        conversation_history: List[Dict[str, Any]],
+        stage: str = "initial_discussion",
+        player_response: str = "",
+        max_messages: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate AI participant conversation using the meeting conversation agent.
+        
+        Args:
+            session_id: Session ID
+            meeting_type: Type of meeting (e.g., "team_standup", "one_on_one")
+            meeting_context: Overall meeting context
+            current_topic: Current topic dictionary with question, context, expected_points
+            participants: List of participant dictionaries
+            conversation_history: Previous conversation messages
+            stage: "initial_discussion" or "response_to_player"
+            player_response: Player's response (required for response_to_player stage)
+        
+        Returns:
+            List of AI conversation messages
+        """
+        logger.info(f"Generating {stage} conversation for session {session_id}")
+        
+        # Format participants for prompt
+        participants_str = "\n".join([
+            f"- {p['name']} ({p['role']}): {p.get('personality', 'professional')} personality"
+            for p in participants
+        ])
+        
+        # Format conversation history
+        history_str = ""
+        if conversation_history:
+            recent_history = conversation_history[-10:]  # Last 10 messages
+            history_str = "\n".join([
+                f"{msg.get('participant_name', 'System')}: {msg.get('content', '')}"
+                for msg in recent_history
+            ])
+        else:
+            history_str = "No previous conversation"
+        
+        # Format topic
+        topic_question = current_topic.get('question', '')
+        topic_context = current_topic.get('context', '')
+        expected_points = current_topic.get('expected_points', [])
+        expected_points_str = "\n".join([f"  - {point}" for point in expected_points])
+        
+        # Determine number of messages to generate
+        if stage == "continue_discussion":
+            num_messages = min(max_messages, 2)  # Limit ongoing conversation to 1-2 messages
+        elif stage == "initial_discussion":
+            num_messages = min(max_messages, 3)
+        else:
+            num_messages = min(max_messages, 2)
+        
+        # Check if the question is directed at a specific person
+        directed_at = None
+        for p in participants:
+            if p['name'].lower() in topic_question.lower():
+                directed_at = p
+                break
+        
+        prompt = f"""You are generating realistic workplace meeting conversation. Generate {num_messages} AI participant messages.
+
+MEETING TYPE: {meeting_type}
+MEETING CONTEXT: {meeting_context}
+
+CURRENT TOPIC:
+Question: {topic_question}
+Context: {topic_context}
+Expected Discussion Points:
+{expected_points_str}
+
+PARTICIPANTS:
+{participants_str}
+
+CONVERSATION SO FAR:
+{history_str}
+
+STAGE: {stage}
+{"PLAYER RESPONSE: " + player_response if player_response else ""}
+
+CRITICAL INSTRUCTIONS FOR INITIAL_DISCUSSION:
+{"If the question mentions a specific person's name (like 'Emily' or 'David'), that person MUST respond FIRST. Then other participants can chime in or ask follow-up questions. The conversation should flow naturally with the addressed person speaking first." if stage == "initial_discussion" and directed_at else "Generate 2-3 AI participants discussing the topic naturally. Build on each other's points."}
+
+{"PERSON ADDRESSED: " + directed_at['name'] + " (" + directed_at['role'] + ") - This person MUST speak FIRST in response to the question directed at them." if stage == "initial_discussion" and directed_at else ""}
+
+INSTRUCTIONS:
+{"Generate 2-3 AI participants discussing the topic naturally BEFORE the player speaks. If someone is specifically asked a question, they respond first, then others can add their thoughts." if stage == "initial_discussion" else f"Generate 1-2 AI participants responding to the player's input: '{player_response}'. Acknowledge what they said and build on it."}
+
+Each participant should:
+- Stay in character based on their personality
+- Reference each other occasionally by name
+- Build on previous points naturally
+- Vary message length (1-3 sentences)
+- If directly asked a question, respond to it first before others chime in
+
+Output ONLY a JSON array (no markdown):
+[
+  {{
+    "participant_id": "participant-id",
+    "participant_name": "Name",
+    "participant_role": "Role",
+    "content": "Natural dialogue (1-3 sentences)",
+    "sentiment": "positive|neutral|constructive|challenging"
+  }}
+]
+
+Make it feel like a real workplace conversation where people respond when addressed, not scripted."""
+        
+        try:
+            response = self.model.generate_content(prompt)
+            response_text = response.text
+            
+            # Extract JSON array
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+            if json_match:
+                messages = json.loads(json_match.group())
+                logger.info(f"Generated {len(messages)} conversation messages")
+                return messages
+            else:
+                logger.warning("No JSON array found in conversation generation")
+                return self._generate_fallback_conversation(participants, stage, num_messages)
+        except Exception as e:
+            logger.error(f"Failed to generate conversation: {e}")
+            return self._generate_fallback_conversation(participants, stage, num_messages)
+    
+    def _generate_fallback_conversation(
+        self,
+        participants: List[Dict[str, Any]],
+        stage: str,
+        num_messages: int
+    ) -> List[Dict[str, Any]]:
+        """Generate simple fallback conversation when AI fails."""
+        messages = []
+        for i in range(min(num_messages, len(participants))):
+            participant = participants[i]
+            if stage == "initial_discussion":
+                content = f"Let me share my thoughts on this topic. I think it's important we discuss this thoroughly."
+            else:
+                content = f"That's a good point. I appreciate you sharing that perspective."
+            
+            messages.append({
+                "participant_id": participant.get('id', f'p-{i}'),
+                "participant_name": participant.get('name', f'Participant {i+1}'),
+                "participant_role": participant.get('role', 'Team Member'),
+                "content": content,
+                "sentiment": "neutral"
+            })
+        return messages
     
     async def generate_meeting_response(
         self,
@@ -1649,7 +2086,7 @@ Tailor meeting content to the job type."""
         participant_personality: str,
         player_response: str
     ) -> Dict[str, Any]:
-        """Generate AI colleague response during a meeting."""
+        """Generate AI colleague response during a meeting (legacy method - use generate_meeting_conversation instead)."""
         logger.info(f"Generating response from {participant_name} in session {session_id}")
         
         prompt = f"""You are simulating an AI colleague in a virtual meeting. Generate a realistic response.
